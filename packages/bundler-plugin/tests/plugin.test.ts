@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { rspack } from "@rspack/core";
 import { build as esbuildBuild } from "esbuild";
+import type { NormalizedOutputOptions, OutputBundle } from "rollup";
 import { rollup as createRollupBundle } from "rollup";
 import { build as viteBuild } from "vite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import webpack from "webpack";
 import bunPlugin from "../src/bun";
 import esbuildPlugin from "../src/esbuild";
@@ -271,6 +272,166 @@ describe("sourcemaps bundler plugin", () => {
 		const mapBundle = await findFirst(outDir, ".map");
 		expect(mapBundle).toBeTruthy();
 		await rm(cwd, { recursive: true, force: true });
+	});
+
+	it("batches uploads when payload exceeds maxUploadBodyBytes", async () => {
+		const postedPayloads: UploadPayload[] = [];
+		const fetchImpl = (async (
+			_input: Parameters<typeof fetch>[0],
+			init?: Parameters<typeof fetch>[1],
+		) => {
+			const body = init?.body;
+			if (!body || typeof body !== "string") {
+				throw new Error("Expected JSON string body");
+			}
+			postedPayloads.push(JSON.parse(body) as UploadPayload);
+			return new Response(JSON.stringify({ ok: true }), { status: 200 });
+		}) as typeof fetch;
+		const plugin = firstPlugin(
+			rollupPlugin({
+				endpoint,
+				buildId: "batch-build-id",
+				maxUploadBodyBytes: 600,
+				fetchImpl,
+			}),
+		) as {
+			writeBundle?: (
+				outputOptions: NormalizedOutputOptions,
+				bundle: OutputBundle,
+			) => Promise<void>;
+		};
+
+		if (!plugin.writeBundle) {
+			throw new Error("Expected rollup writeBundle hook");
+		}
+
+		const bundle = {
+			"first.js.map": {
+				type: "asset",
+				fileName: "first.js.map",
+				source: JSON.stringify({ version: 3, mappings: "AAAA".repeat(35) }),
+			},
+			"second.js.map": {
+				type: "asset",
+				fileName: "second.js.map",
+				source: JSON.stringify({ version: 3, mappings: "BBBB".repeat(35) }),
+			},
+			"third.js.map": {
+				type: "asset",
+				fileName: "third.js.map",
+				source: JSON.stringify({ version: 3, mappings: "CCCC".repeat(35) }),
+			},
+		} as unknown as OutputBundle;
+
+		await plugin.writeBundle(
+			{ dir: process.cwd() } as NormalizedOutputOptions,
+			bundle,
+		);
+
+		expect(postedPayloads.length).toBeGreaterThan(1);
+		expect(
+			postedPayloads.every((payload) => payload.buildId === "batch-build-id"),
+		).toBe(true);
+		expect(
+			postedPayloads.every((payload) => payload.bundler === "rollup"),
+		).toBe(true);
+		expect(
+			postedPayloads.every((payload) => payload.sourcemaps.length > 0),
+		).toBe(true);
+		expect(
+			postedPayloads.flatMap((payload) =>
+				payload.sourcemaps.map((sourcemap) => sourcemap.fileName),
+			),
+		).toEqual(["first.js.map", "second.js.map", "third.js.map"]);
+	});
+
+	it("throws on upload error by default", async () => {
+		const onUploadError = vi.fn();
+		const fetchImpl = (async (
+			_input: Parameters<typeof fetch>[0],
+			_init?: Parameters<typeof fetch>[1],
+		) =>
+			new Response(JSON.stringify({ ok: false }), {
+				status: 500,
+			})) as unknown as typeof fetch;
+		const plugin = firstPlugin(
+			rollupPlugin({
+				endpoint,
+				buildId: "fail-default-build-id",
+				fetchImpl,
+				onUploadError,
+			}),
+		) as {
+			writeBundle?: (
+				outputOptions: NormalizedOutputOptions,
+				bundle: OutputBundle,
+			) => Promise<void>;
+		};
+
+		if (!plugin.writeBundle) {
+			throw new Error("Expected rollup writeBundle hook");
+		}
+
+		const bundle = {
+			"bundle.js.map": {
+				type: "asset",
+				fileName: "bundle.js.map",
+				source: JSON.stringify({ version: 3, mappings: "AAAA" }),
+			},
+		} as unknown as OutputBundle;
+
+		await expect(
+			plugin.writeBundle(
+				{ dir: process.cwd() } as NormalizedOutputOptions,
+				bundle,
+			),
+		).rejects.toThrow("Sourcemap upload failed with status 500");
+		expect(onUploadError).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not throw on upload error when failOnError is false", async () => {
+		const onUploadError = vi.fn();
+		const fetchImpl = (async (
+			_input: Parameters<typeof fetch>[0],
+			_init?: Parameters<typeof fetch>[1],
+		) =>
+			new Response(JSON.stringify({ ok: false }), {
+				status: 500,
+			})) as unknown as typeof fetch;
+		const plugin = firstPlugin(
+			rollupPlugin({
+				endpoint,
+				buildId: "fail-soft-build-id",
+				fetchImpl,
+				failOnError: false,
+				onUploadError,
+			}),
+		) as {
+			writeBundle?: (
+				outputOptions: NormalizedOutputOptions,
+				bundle: OutputBundle,
+			) => Promise<void>;
+		};
+
+		if (!plugin.writeBundle) {
+			throw new Error("Expected rollup writeBundle hook");
+		}
+
+		const bundle = {
+			"bundle.js.map": {
+				type: "asset",
+				fileName: "bundle.js.map",
+				source: JSON.stringify({ version: 3, mappings: "AAAA" }),
+			},
+		} as unknown as OutputBundle;
+
+		await expect(
+			plugin.writeBundle(
+				{ dir: process.cwd() } as NormalizedOutputOptions,
+				bundle,
+			),
+		).resolves.toBeUndefined();
+		expect(onUploadError).toHaveBeenCalledTimes(1);
 	});
 
 	it("prefers webpack native build hash when buildId is not provided", async () => {

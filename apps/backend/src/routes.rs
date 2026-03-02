@@ -13,7 +13,7 @@ use crate::SharedState;
 use crate::auth::{AdminAuthenticatedProject, AuthenticatedProject};
 use crate::error::AppError;
 
-const INGEST_MAX_BODY_BYTES: usize = 50 * 1024 * 1024; // 50MB
+const INGEST_MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

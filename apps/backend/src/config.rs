@@ -23,7 +23,7 @@ impl Config {
             .unwrap_or_else(|_| "3000".into())
             .parse()
             .expect("PORT must be a valid u16");
-        let internal_host = std::env::var("INTERNAL_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+        let internal_host = std::env::var("INTERNAL_HOST").unwrap_or_else(|_| "[::]".into());
         let internal_port: u16 = std::env::var("INTERNAL_PORT")
             .unwrap_or_else(|_| "3001".into())
             .parse()
@@ -46,7 +46,7 @@ impl Config {
             s3_secret_access_key: std::env::var("S3_SECRET_ACCESS_KEY")?,
             listen_addr: SocketAddr::new(host.parse().expect("HOST must be a valid IP"), port),
             internal_listen_addr: SocketAddr::new(
-                internal_host
+                normalize_ip_literal(&internal_host)
                     .parse()
                     .expect("INTERNAL_HOST must be a valid IP"),
                 internal_port,
@@ -54,4 +54,10 @@ impl Config {
             admin_token: std::env::var("ADMIN_TOKEN")?,
         })
     }
+}
+
+fn normalize_ip_literal(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
 }

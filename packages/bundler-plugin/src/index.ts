@@ -10,6 +10,7 @@ import type {
 import { createUnplugin } from "unplugin";
 
 const DEFAULT_ENDPOINT = "https://sourcemaps.faststats.dev/api/sourcemaps";
+const DEFAULT_MAX_UPLOAD_BODY_BYTES = 50 * 1024 * 1024;
 
 type BundlerName =
 	| "vite"
@@ -87,6 +88,8 @@ export type BundlerPluginOptions = {
 	endpoint?: string;
 	authToken?: string;
 	buildId?: string;
+	maxUploadBodyBytes?: number;
+	failOnError?: boolean;
 	deleteAfterUpload?: boolean;
 	globalKey?: string;
 	fetchImpl?: typeof fetch;
@@ -177,6 +180,72 @@ const postSourcemaps = async (
 
 	if (!response.ok) {
 		throw new Error(`Sourcemap upload failed with status ${response.status}`);
+	}
+};
+
+const payloadSizeBytes = (payload: SourcemapUploadPayload): number =>
+	Buffer.byteLength(JSON.stringify(payload), "utf8");
+
+const createUploadBatches = (
+	buildId: string,
+	bundler: BundlerName,
+	sourcemaps: SourcemapUpload[],
+	maxUploadBodyBytes: number,
+): SourcemapUploadPayload[] => {
+	if (!Number.isFinite(maxUploadBodyBytes) || maxUploadBodyBytes <= 0) {
+		throw new Error("maxUploadBodyBytes must be a positive number");
+	}
+
+	const uploadedAt = new Date().toISOString();
+	const batches: SourcemapUploadPayload[] = [];
+	let currentBatch: SourcemapUpload[] = [];
+
+	const toPayload = (batch: SourcemapUpload[]): SourcemapUploadPayload => ({
+		buildId,
+		bundler,
+		uploadedAt,
+		sourcemaps: batch,
+	});
+
+	for (const sourcemap of sourcemaps) {
+		const nextBatch = [...currentBatch, sourcemap];
+		const nextPayload = toPayload(nextBatch);
+
+		if (payloadSizeBytes(nextPayload) <= maxUploadBodyBytes) {
+			currentBatch = nextBatch;
+			continue;
+		}
+
+		if (currentBatch.length === 0) {
+			throw new Error(
+				`Sourcemap "${sourcemap.fileName}" exceeds maxUploadBodyBytes limit`,
+			);
+		}
+
+		batches.push(toPayload(currentBatch));
+		currentBatch = [sourcemap];
+
+		if (payloadSizeBytes(toPayload(currentBatch)) > maxUploadBodyBytes) {
+			throw new Error(
+				`Sourcemap "${sourcemap.fileName}" exceeds maxUploadBodyBytes limit`,
+			);
+		}
+	}
+
+	if (currentBatch.length > 0) {
+		batches.push(toPayload(currentBatch));
+	}
+
+	return batches;
+};
+
+const handleUploadError = async (
+	options: BundlerPluginOptions,
+	error: unknown,
+): Promise<void> => {
+	await options.onUploadError?.(error);
+	if (options.failOnError ?? true) {
+		throw error;
 	}
 };
 
@@ -293,15 +362,16 @@ const uploadAndMaybeDelete = async (
 		return;
 	}
 
-	const payload: SourcemapUploadPayload = {
+	const batches = createUploadBatches(
 		buildId,
 		bundler,
-		uploadedAt: new Date().toISOString(),
 		sourcemaps,
-	};
-
-	await postSourcemaps(options, payload);
-	await options.onUploadSuccess?.(payload);
+		options.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
+	);
+	for (const payload of batches) {
+		await postSourcemaps(options, payload);
+		await options.onUploadSuccess?.(payload);
+	}
 
 	if (options.deleteAfterUpload && baseDirForDeletion) {
 		await deleteFiles(
@@ -347,8 +417,7 @@ const rollupWriteBundle = (
 				outputDir,
 			);
 		} catch (error) {
-			await options.onUploadError?.(error);
-			throw error;
+			await handleUploadError(options, error);
 		}
 	};
 
@@ -419,8 +488,7 @@ const applyWebpackLikeHooks = (
 						}
 					}
 				} catch (error) {
-					await options.onUploadError?.(error);
-					throw error;
+					await handleUploadError(options, error);
 				}
 			},
 		);
@@ -522,8 +590,7 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 								outdir,
 							);
 						} catch (error) {
-							await options.onUploadError?.(error);
-							throw error;
+							await handleUploadError(options, error);
 						}
 					});
 				},
@@ -553,8 +620,7 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 						outputDir,
 					);
 				} catch (error) {
-					await options.onUploadError?.(error);
-					throw error;
+					await handleUploadError(options, error);
 				}
 			},
 		};
