@@ -1,0 +1,24 @@
+[package]
+name = "sourcemaps"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aes-gcm = "0.10.3"
+aws-sdk-s3 = "1.82.0"
+axum = "0.8.4"
+base64 = "0.22.1"
+dotenvy = "0.15.7"
+hex = "0.4.3"
+rand = "0.9.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.140"
+sourcemap = "9.3.2"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "uuid"] }
+thiserror = "2.0.12"
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "signal"] }
+tower-http = { version = "0.6.6", features = ["cors", "trace"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
+uuid = { version = "1.17.0", features = ["v4", "serde"] }
+zstd = "0.13.3"

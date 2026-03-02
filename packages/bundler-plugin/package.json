@@ -1,0 +1,71 @@
+{
+	"name": "@faststats/sourcemap-uploader-plugin",
+	"version": "0.1.0",
+	"type": "module",
+	"private": true,
+	"types": "./dist/index.d.mts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs"
+		},
+		"./vite": {
+			"types": "./dist/vite.d.mts",
+			"import": "./dist/vite.mjs"
+		},
+		"./rollup": {
+			"types": "./dist/rollup.d.mts",
+			"import": "./dist/rollup.mjs"
+		},
+		"./rolldown": {
+			"types": "./dist/rolldown.d.mts",
+			"import": "./dist/rolldown.mjs"
+		},
+		"./webpack": {
+			"types": "./dist/webpack.d.mts",
+			"import": "./dist/webpack.mjs"
+		},
+		"./rspack": {
+			"types": "./dist/rspack.d.mts",
+			"import": "./dist/rspack.mjs"
+		},
+		"./esbuild": {
+			"types": "./dist/esbuild.d.mts",
+			"import": "./dist/esbuild.mjs"
+		},
+		"./unloader": {
+			"types": "./dist/unloader.d.mts",
+			"import": "./dist/unloader.mjs"
+		},
+		"./farm": {
+			"types": "./dist/farm.d.mts",
+			"import": "./dist/farm.mjs"
+		},
+		"./bun": {
+			"types": "./dist/bun.d.mts",
+			"import": "./dist/bun.mjs"
+		}
+	},
+	"scripts": {
+		"build": "tsdown",
+		"check-types": "tsc --noEmit",
+		"test": "vitest run"
+	},
+	"devDependencies": {
+		"@rspack/core": "^1.7.6",
+		"@types/node": "^24.11.0",
+		"@types/webpack": "^5.28.5",
+		"esbuild": "^0.25.12",
+		"rollup": "^4.59.0",
+		"tsdown": "^0.21.0-beta.2",
+		"vite": "^7.3.1",
+		"vitest": "^3.2.4",
+		"webpack": "^5.105.3"
+	},
+	"peerDependencies": {
+		"typescript": "^5.9.2"
+	},
+	"dependencies": {
+		"unplugin": "^3.0.0"
+	}
+}
