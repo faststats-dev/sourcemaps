@@ -15,5 +15,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: bun install
-      - run: bun test
+      - run: bun run test

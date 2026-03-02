@@ -7,13 +7,15 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-start:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/cache@v5
         with:
           key: bun-install-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -21,16 +23,18 @@ jobs:
       - run: bun install
       - run: bun run build
 
-  typecheck:
+  check-types:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/cache@v5
         with:
           key: bun-install-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           path: ~/.bun/install/cache
       - run: bun install
-      - run: bun turbo run typecheck
+      - run: bun run check-types

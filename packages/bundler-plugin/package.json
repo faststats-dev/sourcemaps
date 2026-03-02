@@ -48,6 +48,7 @@
 	},
 	"scripts": {
 		"build": "tsdown",
+		"lint": "biome check .",
 		"check-types": "tsc --noEmit",
 		"test": "vitest run"
 	},

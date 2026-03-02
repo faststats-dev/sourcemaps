@@ -1,0 +1,10 @@
+{
+	"name": "@sourcemaps/backend",
+	"private": true,
+	"scripts": {
+		"build": "cargo build --release",
+		"lint": "cargo fmt -- --check && cargo clippy -- -D warnings",
+		"check-types": "cargo check",
+		"test": "cargo test"
+	}
+}

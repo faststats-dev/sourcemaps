@@ -87,7 +87,7 @@ fn header_value<'a>(headers: &'a HeaderMap, key: &str) -> Result<&'a str, AppErr
         .ok_or(AppError::Unauthorized)
 }
 
-fn bearer_token<'a>(headers: &'a HeaderMap) -> Result<&'a str, AppError> {
+fn bearer_token(headers: &HeaderMap) -> Result<&str, AppError> {
     header_value(headers, HEADER_AUTHORIZATION)?
         .strip_prefix(BEARER_PREFIX)
         .ok_or(AppError::Unauthorized)
