@@ -8,7 +8,7 @@
         "@biomejs/biome": "2.4.4",
         "@changesets/changelog-github": "^0.5.2",
         "@changesets/cli": "^2.29.8",
-        "prettier": "^3.7.4",
+        "prettier": "^3.8.1",
         "turbo": "^2.8.12",
         "typescript": "5.9.3",
       },
@@ -18,7 +18,7 @@
     },
     "packages/bundler-plugin": {
       "name": "@faststats/sourcemap-uploader-plugin",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "dependencies": {
         "unplugin": "^3.0.0",
       },
