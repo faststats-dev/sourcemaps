@@ -427,7 +427,7 @@ const applyWebpackLikeHooks = (
 	});
 };
 
-const sourcemapsPlugin = createUnplugin<BundlerPluginOptions>(
+const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 	(options, meta) => {
 		const framework = meta.framework as BundlerName | undefined;
 		if (!resolveEnabled(options.enabled, framework)) {
@@ -561,7 +561,7 @@ const sourcemapsPlugin = createUnplugin<BundlerPluginOptions>(
 	},
 );
 
-export default sourcemapsPlugin;
+export const sourcemapsPlugin = unpluginInstance;
 export const vite = sourcemapsPlugin.vite;
 export const rollup = sourcemapsPlugin.rollup;
 export const rolldown = sourcemapsPlugin.rolldown;
@@ -571,3 +571,11 @@ export const esbuild = sourcemapsPlugin.esbuild;
 export const unloader = sourcemapsPlugin.unloader;
 export const farm = sourcemapsPlugin.farm;
 export const bun = sourcemapsPlugin.bun;
+
+type DefaultSourcemapsPlugin = typeof vite & typeof sourcemapsPlugin;
+const defaultSourcemapsPlugin: DefaultSourcemapsPlugin = Object.assign(
+	vite,
+	sourcemapsPlugin,
+);
+
+export default defaultSourcemapsPlugin;
