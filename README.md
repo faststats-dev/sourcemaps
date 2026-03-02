@@ -1,5 +1,8 @@
 # Sourcemaps
 
+> [!IMPORTANT]
+> This repository is in early development and not intended for production use.
+
 A monorepo for sourcemap upload infrastructure.
 
 ## Structure
