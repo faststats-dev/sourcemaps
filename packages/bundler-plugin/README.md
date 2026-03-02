@@ -1,5 +1,9 @@
 # @faststats/sourcemap-uploader-plugin
 
+> [!IMPORTANT]
+> This repository is in early development and not intended for production use.
+> Its only published for internal testing.
+
 Unplugin-based sourcemap uploader that works across all unplugin adapters:
 
 - Vite
