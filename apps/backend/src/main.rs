@@ -89,7 +89,7 @@ async fn build_state(config: &Config) -> AppState {
 fn s3_client(config: &Config) -> aws_sdk_s3::Client {
     let s3_creds = aws_sdk_s3::config::Credentials::new(
         &config.s3_access_key_id,
-        &config.s3_secret_key,
+        &config.s3_secret_access_key,
         None,
         None,
         "env",
