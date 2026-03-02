@@ -3,7 +3,8 @@ use std::net::SocketAddr;
 #[derive(Clone)]
 pub struct Config {
     pub database_url: String,
-    pub encryption_key: String,
+    pub file_encryption_key: String,
+    pub apikey_encryption_key: String,
     pub s3_bucket: String,
     pub s3_region: String,
     pub s3_endpoint: String,
@@ -29,7 +30,9 @@ impl Config {
 
         Ok(Self {
             database_url: std::env::var("DATABASE_URL")?,
-            encryption_key: std::env::var("ENCRYPTION_KEY")
+            file_encryption_key: std::env::var("FILE_ENCRYPTION_KEY")
+                .or_else(|_| std::env::var("ENCRYPTION_KEY"))?,
+            apikey_encryption_key: std::env::var("APIKEY_ENCRYPTION_KEY")
                 .or_else(|_| std::env::var("SOURCEMAP_API_KEY_SECRET"))?,
             s3_bucket: std::env::var("S3_BUCKET")?,
             s3_region: std::env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".into()),

@@ -47,7 +47,7 @@ impl FromRequestParts<SharedState> for AuthenticatedProject {
         let project_id: Uuid = row.get("project_id");
         let encrypted_key: String = row.get("encrypted_key");
 
-        if !verify_api_key(&state.crypto, &encrypted_key, token)? {
+        if !verify_api_key(&state.apikey_crypto, &encrypted_key, token)? {
             return Err(AppError::Unauthorized);
         }
 

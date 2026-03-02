@@ -17,7 +17,7 @@ use storage::Storage;
 pub struct AppState {
     pub db: sqlx::PgPool,
     pub storage: Storage,
-    pub crypto: Arc<Crypto>,
+    pub apikey_crypto: Arc<Crypto>,
     pub admin_token: Arc<str>,
 }
 
@@ -61,19 +61,27 @@ async fn main() {
 }
 
 async fn build_state(config: &Config) -> AppState {
-    let crypto = Arc::new(Crypto::new(&config.encryption_key).expect("invalid ENCRYPTION_KEY"));
+    if config.file_encryption_key == config.apikey_encryption_key {
+        panic!("FILE_ENCRYPTION_KEY and APIKEY_ENCRYPTION_KEY must be different");
+    }
+
+    let file_crypto =
+        Arc::new(Crypto::new(&config.file_encryption_key).expect("invalid FILE_ENCRYPTION_KEY"));
+    let apikey_crypto = Arc::new(
+        Crypto::new(&config.apikey_encryption_key).expect("invalid APIKEY_ENCRYPTION_KEY"),
+    );
     let db = PgPoolOptions::new()
         .max_connections(10)
         .connect(&config.database_url)
         .await
         .expect("failed to connect to database");
     let s3_client = s3_client(config);
-    let storage = Storage::new(s3_client, config.s3_bucket.clone(), crypto.clone());
+    let storage = Storage::new(s3_client, config.s3_bucket.clone(), file_crypto.clone());
 
     AppState {
         db,
         storage,
-        crypto,
+        apikey_crypto,
         admin_token: Arc::<str>::from(config.admin_token.clone()),
     }
 }
