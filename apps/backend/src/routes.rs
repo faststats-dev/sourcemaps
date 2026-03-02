@@ -1,5 +1,6 @@
 use axum::Json;
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
@@ -11,6 +12,8 @@ use uuid::Uuid;
 use crate::SharedState;
 use crate::auth::{AdminAuthenticatedProject, AuthenticatedProject};
 use crate::error::AppError;
+
+const INGEST_MAX_BODY_BYTES: usize = 50 * 1024 * 1024; // 50MB
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,7 +86,10 @@ pub struct ApplyResponse {
 pub fn public_router(state: SharedState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/api/sourcemaps", post(ingest))
+        .route(
+            "/api/sourcemaps",
+            post(ingest).route_layer(DefaultBodyLimit::max(INGEST_MAX_BODY_BYTES)),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
