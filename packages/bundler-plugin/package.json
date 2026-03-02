@@ -2,6 +2,10 @@
 	"name": "@faststats/sourcemap-uploader-plugin",
 	"version": "0.1.0",
 	"type": "module",
+	"files": [
+		"dist",
+		"README.md"
+	],
 	"types": "./dist/index.d.mts",
 	"exports": {
 		".": {
