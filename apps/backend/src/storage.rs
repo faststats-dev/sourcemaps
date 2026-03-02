@@ -128,15 +128,26 @@ fn zstd_decompress(data: &[u8]) -> Result<Vec<u8>, AppError> {
     Ok(out)
 }
 
-fn s3_error(error: impl ToString) -> AppError {
-    AppError::S3(error.to_string())
+fn s3_error(error: impl ToString + std::fmt::Debug) -> AppError {
+    let display = error.to_string();
+    let debug = format!("{error:?}");
+    if display == debug {
+        AppError::S3(display)
+    } else {
+        AppError::S3(format!("{display}; details: {debug}"))
+    }
 }
 
-fn s3_get_error(error: impl ToString) -> AppError {
+fn s3_get_error(error: impl ToString + std::fmt::Debug) -> AppError {
     let msg = error.to_string();
-    if msg.contains("NoSuchKey") || msg.contains("not found") {
+    let details = format!("{error:?}");
+    if msg.contains("NoSuchKey")
+        || msg.contains("not found")
+        || details.contains("NoSuchKey")
+        || details.contains("NotFound")
+    {
         AppError::NotFound
     } else {
-        AppError::S3(msg)
+        AppError::S3(format!("{msg}; details: {details}"))
     }
 }
