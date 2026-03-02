@@ -19,7 +19,7 @@ COPY . .
 RUN cargo build \
     --release \
     --target x86_64-unknown-linux-musl \
-    --bin data-collector
+    --bin sourcemaps
 
 FROM gcr.io/distroless/static-debian12 AS runtime
 WORKDIR /app
