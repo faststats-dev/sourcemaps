@@ -71,10 +71,11 @@ async fn build_state(config: &Config) -> AppState {
         Crypto::new(&config.apikey_encryption_key).expect("invalid APIKEY_ENCRYPTION_KEY"),
     );
     let db = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(config.database_max_connections)
         .connect(&config.database_url)
         .await
         .expect("failed to connect to database");
+    info!("connected to postgres");
     let s3_client = s3_client(config);
     let storage = Storage::new(s3_client, config.s3_bucket.clone(), file_crypto.clone());
 

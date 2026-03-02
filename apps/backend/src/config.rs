@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 #[derive(Clone)]
 pub struct Config {
     pub database_url: String,
+    pub database_max_connections: u32,
     pub file_encryption_key: String,
     pub apikey_encryption_key: String,
     pub s3_bucket: String,
@@ -30,6 +31,10 @@ impl Config {
 
         Ok(Self {
             database_url: std::env::var("DATABASE_URL")?,
+            database_max_connections: std::env::var("DATABASE_MAX_CONNECTIONS")
+                .unwrap_or_else(|_| "3".into())
+                .parse()
+                .expect("DATABASE_MAX_CONNECTIONS must be a valid u32"),
             file_encryption_key: std::env::var("FILE_ENCRYPTION_KEY")
                 .or_else(|_| std::env::var("ENCRYPTION_KEY"))?,
             apikey_encryption_key: std::env::var("APIKEY_ENCRYPTION_KEY")
