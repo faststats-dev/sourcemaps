@@ -1,0 +1,13 @@
+{
+	"$schema": "https://unpkg.com/@changesets/config@3.1.2/schema.json",
+	"changelog": [
+		"@changesets/cli/changelog",
+		{
+			"repo": "faststats-dev/sourcemaps"
+		}
+	],
+	"commit": false,
+	"access": "public",
+	"baseBranch": "main",
+	"updateInternalDependencies": "patch"
+}
