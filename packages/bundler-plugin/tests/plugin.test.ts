@@ -237,6 +237,42 @@ describe("sourcemaps bundler plugin", () => {
 		await rm(cwd, { recursive: true, force: true });
 	});
 
+	it("does nothing when enabled is false", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "sourcemaps-vite-disabled-"));
+		await cp(join(fixturesDir, "vite"), cwd, { recursive: true });
+		const outDir = join(cwd, "dist");
+
+		await viteBuild({
+			configFile: false,
+			root: cwd,
+			build: {
+				outDir,
+				sourcemap: true,
+				emptyOutDir: true,
+			},
+			plugins: [
+				vitePlugin({
+					endpoint,
+					buildId: "disabled-build-id",
+					deleteAfterUpload: true,
+					enabled: false,
+				}),
+			],
+		});
+
+		expect(uploads).toHaveLength(0);
+		const jsBundle = await findFirst(outDir, ".js");
+		expect(jsBundle).toBeTruthy();
+		if (!jsBundle) {
+			throw new Error("Expected Vite output bundle to exist");
+		}
+		const content = await readFile(jsBundle, "utf8");
+		expect(content.includes('buildId:"disabled-build-id"')).toBe(false);
+		const mapBundle = await findFirst(outDir, ".map");
+		expect(mapBundle).toBeTruthy();
+		await rm(cwd, { recursive: true, force: true });
+	});
+
 	it("prefers webpack native build hash when buildId is not provided", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "sourcemaps-webpack-native-id-"));
 		await cp(join(fixturesDir, "webpack"), cwd, { recursive: true });

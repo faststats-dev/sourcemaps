@@ -83,6 +83,7 @@ export type SourcemapUploadPayload = {
 };
 
 export type BundlerPluginOptions = {
+	enabled?: boolean | ((framework: BundlerName | undefined) => boolean);
 	endpoint?: string;
 	authToken?: string;
 	buildId?: string;
@@ -94,6 +95,12 @@ export type BundlerPluginOptions = {
 };
 
 const pluginName = "sourcemaps-bundler-plugin";
+
+const resolveEnabled = (
+	enabled: BundlerPluginOptions["enabled"],
+	framework: BundlerName | undefined,
+): boolean =>
+	typeof enabled === "function" ? enabled(framework) : (enabled ?? true);
 
 const createBuildId = (): string => {
 	try {
@@ -422,6 +429,14 @@ const applyWebpackLikeHooks = (
 
 const sourcemapsPlugin = createUnplugin<BundlerPluginOptions>(
 	(options, meta) => {
+		const framework = meta.framework as BundlerName | undefined;
+		if (!resolveEnabled(options.enabled, framework)) {
+			return {
+				name: pluginName,
+				enforce: "post",
+			};
+		}
+
 		const fallbackBuildId = options.buildId ?? createBuildId();
 		const resolveBuildIdForFramework = (nativeBuildId?: string): string =>
 			resolveBuildId(options.buildId, fallbackBuildId, nativeBuildId);

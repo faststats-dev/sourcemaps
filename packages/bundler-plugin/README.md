@@ -42,6 +42,7 @@ export default {
 ## Options
 
 - `endpoint` (required): upload URL
+- `enabled`: `true` by default; set `false` or pass `(framework) => boolean` to disable the plugin conditionally
 - `authToken`: bearer token for the upload request
 - `buildId`: custom build identifier
 - `deleteAfterUpload`: remove sourcemap files after successful upload
