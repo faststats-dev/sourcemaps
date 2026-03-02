@@ -23,7 +23,7 @@ impl Config {
             .unwrap_or_else(|_| "3000".into())
             .parse()
             .expect("PORT must be a valid u16");
-        let internal_host = std::env::var("INTERNAL_HOST").unwrap_or_else(|_| "[::]".into());
+        let internal_host = std::env::var("INTERNAL_HOST").unwrap_or_else(|_| "0.0.0.0".into());
         let internal_port: u16 = std::env::var("INTERNAL_PORT")
             .unwrap_or_else(|_| "3001".into())
             .parse()
