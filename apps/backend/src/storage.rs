@@ -106,6 +106,38 @@ impl Storage {
 
         Ok(deleted)
     }
+
+    pub async fn list_prefix_keys(&self, prefix: &str) -> Result<Vec<String>, AppError> {
+        let mut keys = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix);
+
+            if let Some(token) = &continuation_token {
+                req = req.continuation_token(token);
+            }
+
+            let resp = req.send().await.map_err(s3_error)?;
+
+            for object in resp.contents() {
+                if let Some(key) = object.key() {
+                    keys.push(key.to_string());
+                }
+            }
+
+            if resp.is_truncated() != Some(true) {
+                break;
+            }
+            continuation_token = resp.next_continuation_token().map(Into::into);
+        }
+
+        Ok(keys)
+    }
 }
 
 fn zstd_compress(data: &[u8]) -> Result<Vec<u8>, AppError> {

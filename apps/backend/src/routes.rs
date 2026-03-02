@@ -4,7 +4,6 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use uuid::Uuid;
@@ -120,14 +119,6 @@ pub async fn ingest(
         let key = s3_key(project_id, &payload.build_id, &entry.file_name);
 
         state.storage.put(&key, entry.sourcemap.as_bytes()).await?;
-
-        sqlx::query(
-            "INSERT INTO source_maps (project_id, type, file, url, created_at) VALUES ($1, 'file', $2, NULL, NOW())",
-        )
-        .bind(project_id)
-        .bind(&key)
-        .execute(&state.db)
-        .await?;
     }
 
     let ingested = payload.sourcemaps.len();
@@ -166,13 +157,7 @@ pub async fn wipe(
     let prefix = format!("{project_id}/");
 
     let deleted_files = state.storage.delete_prefix(&prefix).await?;
-
-    let result = sqlx::query("DELETE FROM source_maps WHERE project_id = $1")
-        .bind(project_id)
-        .execute(&state.db)
-        .await?;
-
-    let deleted_rows = result.rows_affected();
+    let deleted_rows = 0;
 
     info!(%project_id, deleted_files, deleted_rows, "wiped all sourcemaps");
 
@@ -187,22 +172,22 @@ pub async fn list_sourcemaps(
     auth: AdminAuthenticatedProject,
     State(state): State<SharedState>,
 ) -> Result<Json<SourcemapListResponse>, AppError> {
-    let rows =
-        sqlx::query("SELECT file FROM source_maps WHERE project_id = $1 ORDER BY created_at DESC")
-            .bind(auth.project_id)
-            .fetch_all(&state.db)
-            .await?;
-
-    let sourcemaps = rows
+    let prefix = format!("{}/", auth.project_id);
+    let keys = state.storage.list_prefix_keys(&prefix).await?;
+    let mut sourcemaps: Vec<SourcemapListItem> = keys
         .into_iter()
-        .filter_map(|row| {
-            let key: String = row.get("file");
+        .filter_map(|key| {
             parse_sourcemap_key(&key).map(|(build_id, file_name)| SourcemapListItem {
                 build_id,
                 file_name,
             })
         })
         .collect();
+    sourcemaps.sort_by(|a, b| {
+        b.build_id
+            .cmp(&a.build_id)
+            .then_with(|| b.file_name.cmp(&a.file_name))
+    });
 
     Ok(Json(SourcemapListResponse {
         ok: true,
