@@ -9,6 +9,8 @@ import type {
 } from "rollup";
 import { createUnplugin } from "unplugin";
 
+const DEFAULT_ENDPOINT = "https://sourcemaps.faststats.dev/api/sourcemaps";
+
 type BundlerName =
 	| "vite"
 	| "rollup"
@@ -81,7 +83,7 @@ export type SourcemapUploadPayload = {
 };
 
 export type BundlerPluginOptions = {
-	endpoint: string;
+	endpoint?: string;
 	authToken?: string;
 	buildId?: string;
 	deleteAfterUpload?: boolean;
@@ -155,7 +157,7 @@ const postSourcemaps = async (
 	payload: SourcemapUploadPayload,
 ): Promise<void> => {
 	const fetchImpl = options.fetchImpl ?? fetch;
-	const response = await fetchImpl(options.endpoint, {
+	const response = await fetchImpl(options.endpoint ?? DEFAULT_ENDPOINT, {
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
