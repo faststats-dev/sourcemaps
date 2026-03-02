@@ -3,6 +3,7 @@
 	"private": true,
 	"scripts": {
 		"build": "turbo run build",
+		"build:packages": "turbo run build --filter=@faststats/sourcemap-uploader-plugin",
 		"dev": "turbo run dev",
 		"lint": "turbo run lint",
 		"test": "turbo run test",
