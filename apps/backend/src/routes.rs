@@ -5,7 +5,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{HashMap, HashSet};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use uuid::Uuid;
@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::SharedState;
 use crate::auth::{AdminAuthenticatedProject, AuthenticatedProject};
 use crate::error::AppError;
+use crate::storage::StoredObjectMeta;
 
 const INGEST_MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
 
@@ -265,21 +266,22 @@ pub async fn cleanup_old_builds(
 ) -> Result<Json<CleanupResponse>, AppError> {
     let project_id = auth.project_id;
     let prefix = format!("{project_id}/");
-    let keys = state.storage.list_prefix_keys(&prefix).await?;
+    let objects = state.storage.list_prefix_objects(&prefix).await?;
 
     let excluded_build_ids = normalized_build_ids(&payload.excluded_build_ids);
     let (latest_build_id, deleted_build_ids) =
-        select_builds_for_cleanup(&keys, &excluded_build_ids);
+        select_builds_for_cleanup(&objects, &excluded_build_ids);
     let deleted_build_ids_set: HashSet<&str> =
         deleted_build_ids.iter().map(String::as_str).collect();
 
-    let keys_to_delete: Vec<String> = keys
+    let keys_to_delete: Vec<String> = objects
         .into_iter()
-        .filter(|key| {
-            parse_sourcemap_key(key)
+        .filter(|object| {
+            parse_sourcemap_key(&object.key)
                 .map(|(build_id, _)| deleted_build_ids_set.contains(build_id.as_str()))
                 .unwrap_or(false)
         })
+        .map(|object| object.key)
         .collect();
 
     let deleted_files = state.storage.delete_keys(&keys_to_delete).await?;
@@ -355,24 +357,36 @@ fn normalized_build_ids(input: &[String]) -> Vec<String> {
 }
 
 fn select_builds_for_cleanup(
-    keys: &[String],
+    objects: &[StoredObjectMeta],
     excluded_build_ids: &[String],
 ) -> (Option<String>, Vec<String>) {
-    let mut builds = BTreeSet::new();
-    for key in keys {
-        if let Some((build_id, _)) = parse_sourcemap_key(key) {
-            builds.insert(build_id);
+    let mut build_latest_modified: HashMap<String, i64> = HashMap::new();
+    for object in objects {
+        if let Some((build_id, _)) = parse_sourcemap_key(&object.key) {
+            let modified = object.last_modified_epoch_seconds.unwrap_or(i64::MIN);
+            build_latest_modified
+                .entry(build_id)
+                .and_modify(|current| *current = (*current).max(modified))
+                .or_insert(modified);
         }
     }
 
-    let latest_build_id = builds.last().cloned();
+    let latest_build_id = build_latest_modified
+        .iter()
+        .max_by(|(a_build, a_modified), (b_build, b_modified)| {
+            a_modified
+                .cmp(b_modified)
+                .then_with(|| a_build.cmp(b_build))
+        })
+        .map(|(build_id, _)| build_id.clone());
     let excluded_set: HashSet<&str> = excluded_build_ids.iter().map(String::as_str).collect();
-    let deleted_build_ids = builds
-        .into_iter()
+    let mut deleted_build_ids: Vec<String> = build_latest_modified
+        .into_keys()
         .filter(|build_id| {
             Some(build_id) != latest_build_id.as_ref() && !excluded_set.contains(build_id.as_str())
         })
         .collect();
+    deleted_build_ids.sort_unstable();
 
     (latest_build_id, deleted_build_ids)
 }
@@ -383,6 +397,7 @@ mod tests {
         map_file_name, normalized_build_ids, parse_sourcemap_key, require_non_empty,
         select_builds_for_cleanup,
     };
+    use crate::storage::StoredObjectMeta;
 
     #[test]
     fn map_file_name_adds_map_suffix_when_missing() {
@@ -422,19 +437,31 @@ mod tests {
 
     #[test]
     fn select_builds_for_cleanup_keeps_latest_and_excluded() {
-        let keys = vec![
-            "proj/build-001/app.js.map".to_string(),
-            "proj/build-002/app.js.map".to_string(),
-            "proj/build-003/app.js.map".to_string(),
-            "proj/build-004/app.js.map".to_string(),
+        let objects = vec![
+            StoredObjectMeta {
+                key: "proj/build-001/app.js.map".to_string(),
+                last_modified_epoch_seconds: Some(100),
+            },
+            StoredObjectMeta {
+                key: "proj/build-002/app.js.map".to_string(),
+                last_modified_epoch_seconds: Some(200),
+            },
+            StoredObjectMeta {
+                key: "proj/build-003/app.js.map".to_string(),
+                last_modified_epoch_seconds: Some(400),
+            },
+            StoredObjectMeta {
+                key: "proj/build-004/app.js.map".to_string(),
+                last_modified_epoch_seconds: Some(300),
+            },
         ];
         let excluded = vec!["build-002".to_string()];
-        let (latest, deleted) = select_builds_for_cleanup(&keys, &excluded);
+        let (latest, deleted) = select_builds_for_cleanup(&objects, &excluded);
 
-        assert_eq!(latest, Some("build-004".to_string()));
+        assert_eq!(latest, Some("build-003".to_string()));
         assert_eq!(
             deleted,
-            vec!["build-001".to_string(), "build-003".to_string()]
+            vec!["build-001".to_string(), "build-004".to_string()]
         );
     }
 
@@ -443,5 +470,27 @@ mod tests {
         let (latest, deleted) = select_builds_for_cleanup(&[], &[]);
         assert_eq!(latest, None);
         assert!(deleted.is_empty());
+    }
+
+    #[test]
+    fn select_builds_for_cleanup_uses_latest_object_within_build() {
+        let objects = vec![
+            StoredObjectMeta {
+                key: "proj/build-a/a.js.map".to_string(),
+                last_modified_epoch_seconds: Some(100),
+            },
+            StoredObjectMeta {
+                key: "proj/build-a/b.js.map".to_string(),
+                last_modified_epoch_seconds: Some(500),
+            },
+            StoredObjectMeta {
+                key: "proj/build-b/a.js.map".to_string(),
+                last_modified_epoch_seconds: Some(400),
+            },
+        ];
+
+        let (latest, deleted) = select_builds_for_cleanup(&objects, &[]);
+        assert_eq!(latest, Some("build-a".to_string()));
+        assert_eq!(deleted, vec!["build-b".to_string()]);
     }
 }

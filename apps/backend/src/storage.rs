@@ -16,6 +16,12 @@ pub struct Storage {
     crypto: Arc<Crypto>,
 }
 
+#[derive(Clone, Debug)]
+pub struct StoredObjectMeta {
+    pub key: String,
+    pub last_modified_epoch_seconds: Option<i64>,
+}
+
 impl Storage {
     pub fn new(client: Client, bucket: String, crypto: Arc<Crypto>) -> Self {
         Self {
@@ -170,6 +176,44 @@ impl Storage {
         }
 
         Ok(keys)
+    }
+
+    pub async fn list_prefix_objects(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<StoredObjectMeta>, AppError> {
+        let mut objects = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix);
+
+            if let Some(token) = &continuation_token {
+                req = req.continuation_token(token);
+            }
+
+            let resp = req.send().await.map_err(s3_error)?;
+
+            for object in resp.contents() {
+                if let Some(key) = object.key() {
+                    objects.push(StoredObjectMeta {
+                        key: key.to_string(),
+                        last_modified_epoch_seconds: object.last_modified().map(|dt| dt.secs()),
+                    });
+                }
+            }
+
+            if resp.is_truncated() != Some(true) {
+                break;
+            }
+            continuation_token = resp.next_continuation_token().map(Into::into);
+        }
+
+        Ok(objects)
     }
 }
 
