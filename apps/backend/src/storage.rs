@@ -107,6 +107,39 @@ impl Storage {
         Ok(deleted)
     }
 
+    pub async fn delete_keys(&self, keys: &[String]) -> Result<u64, AppError> {
+        let mut deleted: u64 = 0;
+
+        for chunk in keys.chunks(1000) {
+            let objects: Vec<ObjectIdentifier> = chunk
+                .iter()
+                .filter_map(|key| ObjectIdentifier::builder().key(key).build().ok())
+                .collect();
+
+            if objects.is_empty() {
+                continue;
+            }
+
+            let count = objects.len() as u64;
+            let delete = Delete::builder()
+                .set_objects(Some(objects))
+                .build()
+                .map_err(s3_error)?;
+
+            self.client
+                .delete_objects()
+                .bucket(&self.bucket)
+                .delete(delete)
+                .send()
+                .await
+                .map_err(s3_error)?;
+
+            deleted += count;
+        }
+
+        Ok(deleted)
+    }
+
     pub async fn list_prefix_keys(&self, prefix: &str) -> Result<Vec<String>, AppError> {
         let mut keys = Vec::new();
         let mut continuation_token: Option<String> = None;

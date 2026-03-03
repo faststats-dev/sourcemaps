@@ -5,6 +5,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashSet};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use uuid::Uuid;
@@ -67,6 +68,13 @@ pub struct ApplyPayload {
     pub column: u32,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupPayload {
+    #[serde(default)]
+    pub excluded_build_ids: Vec<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OriginalPosition {
@@ -81,6 +89,16 @@ pub struct OriginalPosition {
 pub struct ApplyResponse {
     pub ok: bool,
     pub original: OriginalPosition,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupResponse {
+    pub ok: bool,
+    pub latest_build_id: Option<String>,
+    pub excluded_build_ids: Vec<String>,
+    pub deleted_build_ids: Vec<String>,
+    pub deleted_files: u64,
 }
 
 pub fn public_router(state: SharedState) -> Router {
@@ -98,6 +116,7 @@ pub fn internal_router(state: SharedState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/internal/sourcemaps", delete(wipe))
+        .route("/internal/sourcemaps/cleanup", delete(cleanup_old_builds))
         .route("/internal/sourcemaps", get(list_sourcemaps))
         .route("/internal/sourcemaps/apply", post(apply_sourcemap))
         .layer(TraceLayer::new_for_http())
@@ -239,6 +258,50 @@ pub async fn apply_sourcemap(
     }))
 }
 
+pub async fn cleanup_old_builds(
+    auth: AdminAuthenticatedProject,
+    State(state): State<SharedState>,
+    Json(payload): Json<CleanupPayload>,
+) -> Result<Json<CleanupResponse>, AppError> {
+    let project_id = auth.project_id;
+    let prefix = format!("{project_id}/");
+    let keys = state.storage.list_prefix_keys(&prefix).await?;
+
+    let excluded_build_ids = normalized_build_ids(&payload.excluded_build_ids);
+    let (latest_build_id, deleted_build_ids) =
+        select_builds_for_cleanup(&keys, &excluded_build_ids);
+    let deleted_build_ids_set: HashSet<&str> =
+        deleted_build_ids.iter().map(String::as_str).collect();
+
+    let keys_to_delete: Vec<String> = keys
+        .into_iter()
+        .filter(|key| {
+            parse_sourcemap_key(key)
+                .map(|(build_id, _)| deleted_build_ids_set.contains(build_id.as_str()))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    let deleted_files = state.storage.delete_keys(&keys_to_delete).await?;
+
+    info!(
+        %project_id,
+        latest_build_id = ?latest_build_id,
+        excluded_build_ids = ?excluded_build_ids,
+        deleted_build_ids = ?deleted_build_ids,
+        deleted_files,
+        "cleaned up old sourcemap builds"
+    );
+
+    Ok(Json(CleanupResponse {
+        ok: true,
+        latest_build_id,
+        excluded_build_ids,
+        deleted_build_ids,
+        deleted_files,
+    }))
+}
+
 fn map_file_name(file_name: &str) -> String {
     if file_name.ends_with(".map") {
         file_name.to_string()
@@ -276,9 +339,50 @@ fn parse_sourcemap_key(key: &str) -> Option<(String, String)> {
     Some((build_id, file_name))
 }
 
+fn normalized_build_ids(input: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for value in input {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            out.push(trimmed.to_string());
+        }
+    }
+    out
+}
+
+fn select_builds_for_cleanup(
+    keys: &[String],
+    excluded_build_ids: &[String],
+) -> (Option<String>, Vec<String>) {
+    let mut builds = BTreeSet::new();
+    for key in keys {
+        if let Some((build_id, _)) = parse_sourcemap_key(key) {
+            builds.insert(build_id);
+        }
+    }
+
+    let latest_build_id = builds.last().cloned();
+    let excluded_set: HashSet<&str> = excluded_build_ids.iter().map(String::as_str).collect();
+    let deleted_build_ids = builds
+        .into_iter()
+        .filter(|build_id| {
+            Some(build_id) != latest_build_id.as_ref() && !excluded_set.contains(build_id.as_str())
+        })
+        .collect();
+
+    (latest_build_id, deleted_build_ids)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{map_file_name, parse_sourcemap_key, require_non_empty};
+    use super::{
+        map_file_name, normalized_build_ids, parse_sourcemap_key, require_non_empty,
+        select_builds_for_cleanup,
+    };
 
     #[test]
     fn map_file_name_adds_map_suffix_when_missing() {
@@ -299,5 +403,45 @@ mod tests {
     fn require_non_empty_rejects_whitespace() {
         let err = require_non_empty("build_id", "   ").expect_err("value should be invalid");
         assert!(format!("{err}").contains("build_id is required"));
+    }
+
+    #[test]
+    fn normalized_build_ids_deduplicates_and_trims() {
+        let normalized = normalized_build_ids(&[
+            " build-1 ".to_string(),
+            "build-1".to_string(),
+            "".to_string(),
+            "   ".to_string(),
+            "build-2".to_string(),
+        ]);
+        assert_eq!(
+            normalized,
+            vec!["build-1".to_string(), "build-2".to_string()]
+        );
+    }
+
+    #[test]
+    fn select_builds_for_cleanup_keeps_latest_and_excluded() {
+        let keys = vec![
+            "proj/build-001/app.js.map".to_string(),
+            "proj/build-002/app.js.map".to_string(),
+            "proj/build-003/app.js.map".to_string(),
+            "proj/build-004/app.js.map".to_string(),
+        ];
+        let excluded = vec!["build-002".to_string()];
+        let (latest, deleted) = select_builds_for_cleanup(&keys, &excluded);
+
+        assert_eq!(latest, Some("build-004".to_string()));
+        assert_eq!(
+            deleted,
+            vec!["build-001".to_string(), "build-003".to_string()]
+        );
+    }
+
+    #[test]
+    fn select_builds_for_cleanup_handles_no_builds() {
+        let (latest, deleted) = select_builds_for_cleanup(&[], &[]);
+        assert_eq!(latest, None);
+        assert!(deleted.is_empty());
     }
 }
