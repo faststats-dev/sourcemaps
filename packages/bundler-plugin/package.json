@@ -61,7 +61,7 @@
 		"@types/webpack": "^5.28.5",
 		"esbuild": "^0.25.12",
 		"rollup": "^4.59.0",
-		"tsdown": "^0.20.3",
+		"tsdown": "^0.21.0-beta.3",
 		"vite": "^7.3.1",
 		"vitest": "4.0.18",
 		"webpack": "5.105.4"
