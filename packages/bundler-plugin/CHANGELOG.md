@@ -1,5 +1,11 @@
 # @faststats/sourcemap-uploader-plugin
 
+## 0.2.1
+
+### Patch Changes
+
+- bd0e180: Add upload payload batching with a configurable `maxUploadBodyBytes` limit and introduce a `failOnError` option to control whether upload failures should fail the build.
+
 ## 0.2.0
 
 ### Minor Changes
