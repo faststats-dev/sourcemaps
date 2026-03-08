@@ -18,7 +18,7 @@
     },
     "packages/bundler-plugin": {
       "name": "@faststats/sourcemap-uploader-plugin",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "unplugin": "^3.0.0",
       },
