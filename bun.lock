@@ -9,7 +9,7 @@
         "@changesets/changelog-github": "^0.6.0",
         "@changesets/cli": "^2.30.0",
         "prettier": "^3.8.1",
-        "turbo": "^2.8.12",
+        "turbo": "^2.8.13",
         "typescript": "5.9.3",
       },
     },
@@ -18,7 +18,7 @@
     },
     "packages/bundler-plugin": {
       "name": "@faststats/sourcemap-uploader-plugin",
-      "version": "0.2.1",
+      "version": "0.2.0",
       "dependencies": {
         "unplugin": "^3.0.0",
       },
