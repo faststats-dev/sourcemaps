@@ -14,12 +14,11 @@
 		"ci:publish": "cd packages/bundler-plugin && bun publish --access public && changeset tag"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.4.6",
-		"prettier": "^3.8.1",
+		"@biomejs/biome": "2.4.7",
 		"turbo": "^2.8.14",
 		"typescript": "5.9.3",
 		"@changesets/changelog-github": "0.6.0",
-		"@changesets/cli": "2.29.8"
+		"@changesets/cli": "2.30.0"
 	},
 	"engines": {
 		"node": ">=18"
