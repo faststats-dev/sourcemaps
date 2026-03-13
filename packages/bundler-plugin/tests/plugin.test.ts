@@ -1,7 +1,8 @@
 import { cp, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { rspack } from "@rspack/core";
 import { build as esbuildBuild } from "esbuild";
 import type { NormalizedOutputOptions, OutputBundle } from "rollup";
@@ -9,16 +10,17 @@ import { rollup as createRollupBundle } from "rollup";
 import { build as viteBuild } from "vite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import webpack from "webpack";
-import bunPlugin from "../src/bun";
-import esbuildPlugin from "../src/esbuild";
-import farmPlugin from "../src/farm";
+import bunPlugin from "../src/bundler/bun";
+import esbuildPlugin from "../src/bundler/esbuild";
+import farmPlugin from "../src/bundler/farm";
+import rolldownPlugin from "../src/bundler/rolldown";
+import rollupPlugin from "../src/bundler/rollup";
+import rspackPlugin from "../src/bundler/rspack";
+import unloaderPlugin from "../src/bundler/unloader";
+import vitePlugin from "../src/bundler/vite";
+import webpackPlugin from "../src/bundler/webpack";
 import sourcemapsPlugin from "../src/index";
-import rolldownPlugin from "../src/rolldown";
-import rollupPlugin from "../src/rollup";
-import rspackPlugin from "../src/rspack";
-import unloaderPlugin from "../src/unloader";
-import vitePlugin from "../src/vite";
-import webpackPlugin from "../src/webpack";
+import { getGitCommitHashSync } from "../src/utils/git";
 
 type UploadPayload = {
 	buildId: string;
@@ -27,7 +29,10 @@ type UploadPayload = {
 	sourcemaps: Array<{ fileName: string; sourcemap: string }>;
 };
 
-const fixturesDir = resolve("tests/fixtures");
+const fixturesDir = resolve(
+	dirname(fileURLToPath(import.meta.url)),
+	"fixtures",
+);
 
 const listFiles = async (rootDir: string): Promise<string[]> => {
 	const entries = await readdir(rootDir, { withFileTypes: true });
@@ -434,12 +439,12 @@ describe("sourcemaps bundler plugin", () => {
 		expect(onUploadError).toHaveBeenCalledTimes(1);
 	});
 
-	it("prefers webpack native build hash when buildId is not provided", async () => {
-		const cwd = await mkdtemp(join(tmpdir(), "sourcemaps-webpack-native-id-"));
+	it("uses git commit hash when buildId is not provided", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "sourcemaps-webpack-git-id-"));
 		await cp(join(fixturesDir, "webpack"), cwd, { recursive: true });
 		const outDir = join(cwd, "dist");
 
-		const stats = await runWebpack({
+		await runWebpack({
 			mode: "production",
 			context: cwd,
 			entry: "./src/index.js",
@@ -456,16 +461,11 @@ describe("sourcemaps bundler plugin", () => {
 			],
 		});
 
-		const nativeHash =
-			stats.compilation.hash ??
-			stats.compilation.fullHash ??
-			stats.toJson({ all: false, hash: true }).hash;
-		expect(typeof nativeHash).toBe("string");
-		expect(nativeHash).toBeTruthy();
+		const expectedBuildId = getGitCommitHashSync() ?? "unknown";
 		expect(uploads).toHaveLength(1);
-		expect(uploads[0]?.buildId).toBe(nativeHash);
+		expect(uploads[0]?.buildId).toBe(expectedBuildId);
 		const content = await readFile(join(outDir, "bundle.js"), "utf8");
-		expect(content.includes(`buildId:"${nativeHash}"`)).toBe(true);
+		expect(content.includes(`buildId:"${expectedBuildId}"`)).toBe(true);
 		await rm(cwd, { recursive: true, force: true });
 	});
 
@@ -506,12 +506,12 @@ describe("sourcemaps bundler plugin", () => {
 		await rm(cwd, { recursive: true, force: true });
 	});
 
-	it("prefers rspack native build hash when buildId is not provided", async () => {
-		const cwd = await mkdtemp(join(tmpdir(), "sourcemaps-rspack-native-id-"));
+	it("uses git commit hash when buildId is not provided (rspack)", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "sourcemaps-rspack-git-id-"));
 		await cp(join(fixturesDir, "rspack"), cwd, { recursive: true });
 		const outDir = join(cwd, "dist");
 
-		const stats = await runRspack({
+		await runRspack({
 			mode: "production",
 			context: cwd,
 			entry: {
@@ -530,13 +530,11 @@ describe("sourcemaps bundler plugin", () => {
 			],
 		});
 
-		const nativeHash = stats.toJson({ all: false, hash: true }).hash;
-		expect(typeof nativeHash).toBe("string");
-		expect(nativeHash).toBeTruthy();
+		const expectedBuildId = getGitCommitHashSync() ?? "unknown";
 		expect(uploads).toHaveLength(1);
-		expect(uploads[0]?.buildId).toBe(nativeHash);
+		expect(uploads[0]?.buildId).toBe(expectedBuildId);
 		const content = await readFile(join(outDir, "bundle.js"), "utf8");
-		expect(content.includes(`buildId:"${nativeHash}"`)).toBe(true);
+		expect(content.includes(`buildId:"${expectedBuildId}"`)).toBe(true);
 		await rm(cwd, { recursive: true, force: true });
 	});
 

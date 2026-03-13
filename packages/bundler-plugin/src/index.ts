@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { readdir, readFile, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type {
@@ -8,6 +7,7 @@ import type {
 	OutputOptions,
 } from "rollup";
 import { createUnplugin } from "unplugin";
+import { getGitCommitHashSync } from "./utils/git";
 
 const DEFAULT_ENDPOINT = "https://sourcemaps.faststats.dev/api/sourcemaps";
 const DEFAULT_MAX_UPLOAD_BODY_BYTES = 50 * 1024 * 1024;
@@ -105,22 +105,8 @@ const resolveEnabled = (
 ): boolean =>
 	typeof enabled === "function" ? enabled(framework) : (enabled ?? true);
 
-const createBuildId = (): string => {
-	try {
-		return randomUUID();
-	} catch {
-		return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-	}
-};
-
 const createGlobalInjection = (globalKey: string, buildId: string): string =>
 	`globalThis[${JSON.stringify(globalKey)}]={buildId:${JSON.stringify(buildId)}};`;
-
-const resolveBuildId = (
-	explicitBuildId: string | undefined,
-	fallbackBuildId: string,
-	nativeBuildId?: string,
-): string => explicitBuildId ?? nativeBuildId ?? fallbackBuildId;
 
 const collectUploadCandidates = (
 	entries: Array<[string, unknown]>,
@@ -305,27 +291,6 @@ const getString = (value: unknown, key: string): string | undefined => {
 	return typeof field === "string" ? field : undefined;
 };
 
-const resolveWebpackLikeBuildId = (
-	compilation: WebpackLikeCompilation,
-): string | undefined => compilation.hash ?? compilation.fullHash;
-
-const resolveNativeBuildId = (nativeContext: unknown): string | undefined => {
-	const directBuildId =
-		getString(nativeContext, "buildId") ??
-		getString(nativeContext, "fullHash") ??
-		getString(nativeContext, "hash");
-	if (directBuildId) {
-		return directBuildId;
-	}
-
-	const build = getRecord(nativeContext)?.build;
-	return (
-		getString(build, "buildId") ??
-		getString(build, "fullHash") ??
-		getString(build, "hash")
-	);
-};
-
 const resolveNativeOutputDir = (nativeContext: unknown): string | undefined => {
 	const native = getRecord(nativeContext);
 	const framework = native?.framework;
@@ -443,12 +408,11 @@ const applyWebpackLikeHooks = (
 	options: BundlerPluginOptions,
 	bundler: "webpack" | "rspack",
 	globalKey: string,
-	resolveBuildIdForFramework: (nativeBuildId?: string) => string,
+	buildId: string,
 ): void => {
 	const BannerPlugin = compiler.webpack.BannerPlugin;
 	new BannerPlugin({
-		banner: (data) =>
-			createGlobalInjection(globalKey, resolveBuildIdForFramework(data.hash)),
+		banner: () => createGlobalInjection(globalKey, buildId),
 		raw: true,
 		entryOnly: false,
 	}).apply(compiler);
@@ -470,10 +434,6 @@ const applyWebpackLikeHooks = (
 					if (!outputPath) {
 						return;
 					}
-
-					const buildId = resolveBuildIdForFramework(
-						resolveWebpackLikeBuildId(compilation),
-					);
 					await uploadAndMaybeDelete(
 						options,
 						bundler,
@@ -505,35 +465,28 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 			};
 		}
 
-		const fallbackBuildId = options.buildId ?? createBuildId();
-		const resolveBuildIdForFramework = (nativeBuildId?: string): string =>
-			resolveBuildId(options.buildId, fallbackBuildId, nativeBuildId);
+		const buildId = options.buildId ?? getGitCommitHashSync() ?? "unknown";
 		const globalKey = options.globalKey ?? "__SOURCEMAPS_BUILD__";
-		const staticBuildId = resolveBuildIdForFramework();
-		const injection = createGlobalInjection(globalKey, staticBuildId);
+		const injection = createGlobalInjection(globalKey, buildId);
 
 		return {
 			name: pluginName,
 			enforce: "post",
 			rollup: {
 				outputOptions: rollupOutputOptions(injection),
-				writeBundle: rollupWriteBundle(options, "rollup", staticBuildId),
+				writeBundle: rollupWriteBundle(options, "rollup", buildId),
 			},
 			vite: {
 				outputOptions: rollupOutputOptions(injection),
-				writeBundle: rollupWriteBundle(options, "vite", staticBuildId),
+				writeBundle: rollupWriteBundle(options, "vite", buildId),
 			},
 			rolldown: {
 				outputOptions: rollupOutputOptions(injection) as never,
-				writeBundle: rollupWriteBundle(
-					options,
-					"rolldown",
-					staticBuildId,
-				) as never,
+				writeBundle: rollupWriteBundle(options, "rolldown", buildId) as never,
 			},
 			unloader: {
 				outputOptions: rollupOutputOptions(injection),
-				writeBundle: rollupWriteBundle(options, "unloader", staticBuildId),
+				writeBundle: rollupWriteBundle(options, "unloader", buildId),
 			},
 			webpack(compiler) {
 				applyWebpackLikeHooks(
@@ -541,7 +494,7 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 					options,
 					"webpack",
 					globalKey,
-					resolveBuildIdForFramework,
+					buildId,
 				);
 			},
 			rspack(compiler) {
@@ -550,7 +503,7 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 					options,
 					"rspack",
 					globalKey,
-					resolveBuildIdForFramework,
+					buildId,
 				);
 			},
 			esbuild: {
@@ -585,7 +538,7 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 							await uploadAndMaybeDelete(
 								options,
 								"esbuild",
-								staticBuildId,
+								buildId,
 								sourcemaps,
 								outdir,
 							);
@@ -615,7 +568,7 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 					await uploadAndMaybeDelete(
 						options,
 						meta.framework,
-						resolveBuildIdForFramework(resolveNativeBuildId(nativeContext)),
+						buildId,
 						sourcemaps,
 						outputDir,
 					);

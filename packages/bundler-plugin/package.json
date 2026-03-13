@@ -13,40 +13,40 @@
 			"import": "./dist/index.mjs"
 		},
 		"./vite": {
-			"types": "./dist/vite.d.mts",
-			"import": "./dist/vite.mjs"
+			"types": "./dist/bundler/vite.d.mts",
+			"import": "./dist/bundler/vite.mjs"
 		},
 		"./rollup": {
-			"types": "./dist/rollup.d.mts",
-			"import": "./dist/rollup.mjs"
+			"types": "./dist/bundler/rollup.d.mts",
+			"import": "./dist/bundler/rollup.mjs"
 		},
 		"./rolldown": {
-			"types": "./dist/rolldown.d.mts",
-			"import": "./dist/rolldown.mjs"
+			"types": "./dist/bundler/rolldown.d.mts",
+			"import": "./dist/bundler/rolldown.mjs"
 		},
 		"./webpack": {
-			"types": "./dist/webpack.d.mts",
-			"import": "./dist/webpack.mjs"
+			"types": "./dist/bundler/webpack.d.mts",
+			"import": "./dist/bundler/webpack.mjs"
 		},
 		"./rspack": {
-			"types": "./dist/rspack.d.mts",
-			"import": "./dist/rspack.mjs"
+			"types": "./dist/bundler/rspack.d.mts",
+			"import": "./dist/bundler/rspack.mjs"
 		},
 		"./esbuild": {
-			"types": "./dist/esbuild.d.mts",
-			"import": "./dist/esbuild.mjs"
+			"types": "./dist/bundler/esbuild.d.mts",
+			"import": "./dist/bundler/esbuild.mjs"
 		},
 		"./unloader": {
-			"types": "./dist/unloader.d.mts",
-			"import": "./dist/unloader.mjs"
+			"types": "./dist/bundler/unloader.d.mts",
+			"import": "./dist/bundler/unloader.mjs"
 		},
 		"./farm": {
-			"types": "./dist/farm.d.mts",
-			"import": "./dist/farm.mjs"
+			"types": "./dist/bundler/farm.d.mts",
+			"import": "./dist/bundler/farm.mjs"
 		},
 		"./bun": {
-			"types": "./dist/bun.d.mts",
-			"import": "./dist/bun.mjs"
+			"types": "./dist/bundler/bun.d.mts",
+			"import": "./dist/bundler/bun.mjs"
 		}
 	},
 	"scripts": {
