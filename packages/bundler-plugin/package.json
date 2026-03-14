@@ -57,7 +57,7 @@
 	},
 	"devDependencies": {
 		"@rspack/core": "^1.7.7",
-		"@types/node": "^24.11.0",
+		"@types/node": "^25.0.0",
 		"@types/webpack": "^5.28.5",
 		"esbuild": "^0.27.3",
 		"rollup": "^4.59.0",
