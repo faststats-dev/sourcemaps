@@ -1,5 +1,11 @@
 # @faststats/sourcemap-uploader-plugin
 
+## 0.3.1
+
+### Patch Changes
+
+- afca710: fix: use random uuid as fallback build_id
+
 ## 0.3.0
 
 ### Minor Changes
