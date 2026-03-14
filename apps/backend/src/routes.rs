@@ -147,6 +147,14 @@ pub async fn ingest(
         state.storage.put(&key, entry.sourcemap.as_bytes()).await?;
     }
 
+    record_build_id(
+        &state.db,
+        project_id,
+        &payload.build_id,
+        &payload.uploaded_at,
+    )
+    .await?;
+
     let ingested = payload.sourcemaps.len();
     let total_bytes: usize = payload.sourcemaps.iter().map(|e| e.sourcemap.len()).sum();
     let file_names: Vec<&str> = payload
@@ -173,6 +181,30 @@ pub async fn ingest(
             ingested_count: ingested,
         }),
     ))
+}
+
+async fn record_build_id(
+    db: &sqlx::PgPool,
+    project_id: Uuid,
+    build_id: &str,
+    uploaded_at: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        r#"
+        INSERT INTO project_build_ids (project_id, build_id, deployed_at)
+        VALUES ($1, $2, ($3::timestamptz AT TIME ZONE 'UTC'))
+        ON CONFLICT (project_id, build_id)
+        DO UPDATE SET deployed_at = EXCLUDED.deployed_at
+        "#,
+    )
+    .bind(project_id)
+    .bind(build_id)
+    .bind(uploaded_at)
+    .execute(db)
+    .await
+    .map_err(AppError::Database)?;
+
+    Ok(())
 }
 
 pub async fn wipe(
@@ -321,6 +353,7 @@ fn require_non_empty(field: &str, value: &str) -> Result<(), AppError> {
 
 fn validate_ingest_payload(payload: &IngestPayload) -> Result<(), AppError> {
     require_non_empty("build_id", &payload.build_id)?;
+    require_non_empty("uploaded_at", &payload.uploaded_at)?;
     if payload.sourcemaps.is_empty() {
         return Err(AppError::BadRequest("no sourcemaps provided".into()));
     }
