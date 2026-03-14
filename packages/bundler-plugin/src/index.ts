@@ -462,7 +462,10 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 			};
 		}
 
-		const buildId = options.buildId ?? getGitCommitHashSync() ?? "unknown";
+		const buildId =
+			options.buildId ??
+			getGitCommitHashSync() ??
+			`random_${crypto.randomUUID()}`;
 		const globalKey = options.globalKey ?? "__SOURCEMAPS_BUILD__";
 		const injection = createGlobalInjection(globalKey, buildId);
 
