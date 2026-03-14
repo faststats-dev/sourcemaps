@@ -11,7 +11,7 @@
 		"check-types": "turbo run check-types",
 		"ci": "turbo run lint check-types test build",
 		"ci:version": "changeset version && bun update",
-		"ci:publish": "cd packages/bundler-plugin && bun publish --provenance --access public && changeset tag"
+		"ci:publish": "cd packages/bundler-plugin && bun publish && changeset tag"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.7",
