@@ -1,5 +1,11 @@
 # @faststats/sourcemap-uploader-plugin
 
+## 0.3.0
+
+### Minor Changes
+
+- 63b941c: Determine buildid based on git commit hash
+
 ## 0.2.1
 
 ### Patch Changes
