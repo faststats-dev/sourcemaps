@@ -26,8 +26,6 @@ type BundlerName =
 type RollupLikeBundler = "vite" | "rollup" | "rolldown" | "unloader";
 
 type WebpackLikeCompilation = {
-	hash?: string;
-	fullHash?: string;
 	hooks: {
 		processAssets: {
 			tapPromise: (
@@ -193,29 +191,29 @@ const createUploadBatches = (
 		sourcemaps: batch,
 	});
 
+	const assertWithinLimit = (batch: SourcemapUpload[], fileName: string) => {
+		if (payloadSizeBytes(toPayload(batch)) > maxUploadBodyBytes) {
+			throw new Error(
+				`Sourcemap "${fileName}" exceeds maxUploadBodyBytes limit`,
+			);
+		}
+	};
+
 	for (const sourcemap of sourcemaps) {
 		const nextBatch = [...currentBatch, sourcemap];
-		const nextPayload = toPayload(nextBatch);
 
-		if (payloadSizeBytes(nextPayload) <= maxUploadBodyBytes) {
+		if (payloadSizeBytes(toPayload(nextBatch)) <= maxUploadBodyBytes) {
 			currentBatch = nextBatch;
 			continue;
 		}
 
 		if (currentBatch.length === 0) {
-			throw new Error(
-				`Sourcemap "${sourcemap.fileName}" exceeds maxUploadBodyBytes limit`,
-			);
+			assertWithinLimit([sourcemap], sourcemap.fileName);
 		}
 
 		batches.push(toPayload(currentBatch));
 		currentBatch = [sourcemap];
-
-		if (payloadSizeBytes(toPayload(currentBatch)) > maxUploadBodyBytes) {
-			throw new Error(
-				`Sourcemap "${sourcemap.fileName}" exceeds maxUploadBodyBytes limit`,
-			);
-		}
+		assertWithinLimit(currentBatch, sourcemap.fileName);
 	}
 
 	if (currentBatch.length > 0) {
@@ -240,12 +238,11 @@ const deleteFiles = async (
 	fileNames: string[],
 ): Promise<void> => {
 	await Promise.all(
-		fileNames.map(async (fileName) => {
-			const fullPath = isAbsolute(fileName)
-				? fileName
-				: join(baseDir, fileName);
-			await rm(fullPath, { force: true });
-		}),
+		fileNames.map((fileName) =>
+			rm(isAbsolute(fileName) ? fileName : join(baseDir, fileName), {
+				force: true,
+			}),
+		),
 	);
 };
 
@@ -412,7 +409,7 @@ const applyWebpackLikeHooks = (
 ): void => {
 	const BannerPlugin = compiler.webpack.BannerPlugin;
 	new BannerPlugin({
-		banner: () => createGlobalInjection(globalKey, buildId),
+		banner: createGlobalInjection(globalKey, buildId),
 		raw: true,
 		entryOnly: false,
 	}).apply(compiler);
