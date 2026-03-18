@@ -14,7 +14,7 @@
 		"ci:publish": "cd packages/bundler-plugin && npm publish --access public --provenance && changeset tag"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.4.7",
+		"@biomejs/biome": "2.4.8",
 		"turbo": "^2.8.17",
 		"typescript": "5.9.3",
 		"@changesets/changelog-github": "0.6.0",
