@@ -53,9 +53,7 @@ impl ProguardMapping {
                         if let Ok(meta) =
                             serde_json::from_str::<serde_json::Value>(&line[json_start..])
                         {
-                            if let Some(file_name) =
-                                meta.get("fileName").and_then(|v| v.as_str())
-                            {
+                            if let Some(file_name) = meta.get("fileName").and_then(|v| v.as_str()) {
                                 class.file_name = Some(file_name.to_string());
                             }
                         }
@@ -120,24 +118,13 @@ impl ProguardMapping {
                             && line_num >= m.start_line
                             && line_num <= m.end_line
                     })
-                    .or_else(|| {
-                        class
-                            .methods
-                            .iter()
-                            .find(|m| m.obfuscated_name == method)
-                    })
+                    .or_else(|| class.methods.iter().find(|m| m.obfuscated_name == method))
             } else {
-                class
-                    .methods
-                    .iter()
-                    .find(|m| m.obfuscated_name == method)
+                class.methods.iter().find(|m| m.obfuscated_name == method)
             }
         });
 
-        let _source = class
-            .file_name
-            .as_deref()
-            .unwrap_or(&class.original_name);
+        let _source = class.file_name.as_deref().unwrap_or(&class.original_name);
 
         Ok(OriginalPosition {
             source: class.original_name.clone(),
@@ -205,11 +192,7 @@ fn parse_method_with_lines(s: &str) -> Option<ParsedMethod> {
     let rest = if let Some(colon_pos) = rest.find(':') {
         // Check if what follows the colon is digits (inline mapping)
         let after = &rest[colon_pos + 1..];
-        if after
-            .chars()
-            .next()
-            .map_or(false, |c| c.is_ascii_digit())
-        {
+        if after.chars().next().map_or(false, |c| c.is_ascii_digit()) {
             &rest[..colon_pos]
         } else {
             rest
