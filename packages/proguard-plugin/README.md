@@ -63,7 +63,7 @@ mappingsUpload {
     // Optional – Task that produces the mapping file (adds a dependsOn)
     proguardTask.set(tasks.getByName("proguard"))
 
-    // Optional – Mapping files to upload (default: build/obfuscation-mappings.txt)
+    // Optional – Mapping files to upload
     mappingFiles.from(layout.buildDirectory.file("proguard/mapping.txt"))
 }
 ```
