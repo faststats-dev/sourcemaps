@@ -20,6 +20,7 @@ pub struct Storage {
 pub struct StoredObjectMeta {
     pub key: String,
     pub last_modified_epoch_seconds: Option<i64>,
+    pub size_bytes: Option<u64>,
 }
 
 impl Storage {
@@ -203,6 +204,7 @@ impl Storage {
                     objects.push(StoredObjectMeta {
                         key: key.to_string(),
                         last_modified_epoch_seconds: object.last_modified().map(|dt| dt.secs()),
+                        size_bytes: object.size().and_then(|size| u64::try_from(size).ok()),
                     });
                 }
             }

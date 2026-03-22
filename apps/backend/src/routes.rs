@@ -68,10 +68,24 @@ pub struct IngestResponse {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WipeResponse {
     pub ok: bool,
     pub deleted_files: u64,
     pub deleted_rows: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSourcemapPayload {
+    pub s3_key: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSourcemapResponse {
+    pub ok: bool,
+    pub deleted_files: u64,
 }
 
 #[derive(Serialize)]
@@ -79,6 +93,7 @@ pub struct WipeResponse {
 pub struct SourcemapListItem {
     pub build_id: String,
     pub file_name: String,
+    pub size: u64,
 }
 
 #[derive(Serialize)]
@@ -153,6 +168,7 @@ pub fn internal_router(state: SharedState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/internal/sourcemaps", delete(wipe))
+        .route("/internal/sourcemaps/object", delete(delete_sourcemap))
         .route("/internal/sourcemaps/cleanup", delete(cleanup_old_builds))
         .route("/internal/sourcemaps", get(list_sourcemaps))
         .route("/internal/sourcemaps/apply", post(apply_sourcemap))
@@ -302,18 +318,39 @@ pub async fn wipe(
     }))
 }
 
+pub async fn delete_sourcemap(
+    auth: AdminAuthenticatedProject,
+    State(state): State<SharedState>,
+    Json(payload): Json<DeleteSourcemapPayload>,
+) -> Result<Json<DeleteSourcemapResponse>, AppError> {
+    let project_id = auth.project_id;
+    let s3_key = validate_project_sourcemap_key(project_id, &payload.s3_key)?;
+    let deleted_files = state
+        .storage
+        .delete_keys(std::slice::from_ref(&s3_key))
+        .await?;
+
+    info!(%project_id, s3_key, deleted_files, "deleted sourcemap");
+
+    Ok(Json(DeleteSourcemapResponse {
+        ok: true,
+        deleted_files,
+    }))
+}
+
 pub async fn list_sourcemaps(
     auth: AdminAuthenticatedProject,
     State(state): State<SharedState>,
 ) -> Result<Json<SourcemapListResponse>, AppError> {
     let prefix = format!("{}/", auth.project_id);
-    let keys = state.storage.list_prefix_keys(&prefix).await?;
-    let mut sourcemaps: Vec<SourcemapListItem> = keys
+    let objects = state.storage.list_prefix_objects(&prefix).await?;
+    let mut sourcemaps: Vec<SourcemapListItem> = objects
         .into_iter()
-        .filter_map(|key| {
-            parse_sourcemap_key(&key).map(|(build_id, file_name)| SourcemapListItem {
+        .filter_map(|object| {
+            parse_sourcemap_key(&object.key).map(|(build_id, file_name)| SourcemapListItem {
                 build_id,
                 file_name,
+                size: object.size_bytes.unwrap_or(0),
             })
         })
         .collect();
@@ -499,6 +536,17 @@ fn parse_sourcemap_key(key: &str) -> Option<(String, String)> {
     Some((build_id, file_name))
 }
 
+fn validate_project_sourcemap_key(project_id: Uuid, s3_key: &str) -> Result<String, AppError> {
+    require_non_empty("s3_key", s3_key)?;
+
+    let prefix = format!("{project_id}/");
+    if !s3_key.starts_with(&prefix) || parse_sourcemap_key(s3_key).is_none() {
+        return Err(AppError::BadRequest("invalid sourcemap key".into()));
+    }
+
+    Ok(s3_key.to_string())
+}
+
 fn normalized_build_ids(input: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -553,10 +601,11 @@ fn select_builds_for_cleanup(
 mod tests {
     use super::{
         ProguardEntry, normalize_proguard_entries, normalized_build_ids, parse_sourcemap_key,
-        select_builds_for_cleanup,
+        select_builds_for_cleanup, validate_project_sourcemap_key,
     };
     use crate::mappings::{javascript::map_file_name, require_non_empty};
     use crate::storage::StoredObjectMeta;
+    use uuid::Uuid;
 
     #[test]
     fn map_file_name_adds_map_suffix_when_missing() {
@@ -580,6 +629,27 @@ mod tests {
             parsed,
             Some(("build-42".to_string(), "proguard/base.txt".to_string()))
         );
+    }
+
+    #[test]
+    fn validate_project_sourcemap_key_accepts_owned_key() {
+        let project_id = Uuid::parse_str("01954b9b-7b1d-72b8-8af3-f8d058f60b79").unwrap();
+        let key = format!("{project_id}/build-42/chunk.js.map");
+
+        let validated = validate_project_sourcemap_key(project_id, &key).unwrap();
+
+        assert_eq!(validated, key);
+    }
+
+    #[test]
+    fn validate_project_sourcemap_key_rejects_foreign_key() {
+        let project_id = Uuid::parse_str("01954b9b-7b1d-72b8-8af3-f8d058f60b79").unwrap();
+        let foreign_project_id = Uuid::parse_str("01954b9b-8228-7d29-9d18-c97b9fb3f924").unwrap();
+        let key = format!("{foreign_project_id}/build-42/chunk.js.map");
+
+        let err = validate_project_sourcemap_key(project_id, &key).expect_err("key should fail");
+
+        assert!(format!("{err}").contains("invalid sourcemap key"));
     }
 
     #[test]
@@ -672,18 +742,22 @@ mod tests {
             StoredObjectMeta {
                 key: "proj/build-001/app.js.map".to_string(),
                 last_modified_epoch_seconds: Some(100),
+                size_bytes: None,
             },
             StoredObjectMeta {
                 key: "proj/build-002/app.js.map".to_string(),
                 last_modified_epoch_seconds: Some(200),
+                size_bytes: None,
             },
             StoredObjectMeta {
                 key: "proj/build-003/app.js.map".to_string(),
                 last_modified_epoch_seconds: Some(400),
+                size_bytes: None,
             },
             StoredObjectMeta {
                 key: "proj/build-004/app.js.map".to_string(),
                 last_modified_epoch_seconds: Some(300),
+                size_bytes: None,
             },
         ];
         let excluded = vec!["build-002".to_string()];
@@ -709,14 +783,17 @@ mod tests {
             StoredObjectMeta {
                 key: "proj/build-a/a.js.map".to_string(),
                 last_modified_epoch_seconds: Some(100),
+                size_bytes: None,
             },
             StoredObjectMeta {
                 key: "proj/build-a/b.js.map".to_string(),
                 last_modified_epoch_seconds: Some(500),
+                size_bytes: None,
             },
             StoredObjectMeta {
                 key: "proj/build-b/a.js.map".to_string(),
                 last_modified_epoch_seconds: Some(400),
+                size_bytes: None,
             },
         ];
 
