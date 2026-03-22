@@ -1,5 +1,5 @@
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
-use rand::RngCore;
+use rand::Rng;
 
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
