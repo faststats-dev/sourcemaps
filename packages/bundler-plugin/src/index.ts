@@ -75,6 +75,7 @@ export type SourcemapUpload = {
 };
 
 export type SourcemapUploadPayload = {
+	mappingType: "javascript";
 	buildId: string;
 	bundler: BundlerName;
 	uploadedAt: string;
@@ -185,6 +186,7 @@ const createUploadBatches = (
 	let currentBatch: SourcemapUpload[] = [];
 
 	const toPayload = (batch: SourcemapUpload[]): SourcemapUploadPayload => ({
+		mappingType: "javascript",
 		buildId,
 		bundler,
 		uploadedAt,

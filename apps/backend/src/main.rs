@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod crypto;
 mod error;
+mod mappings;
 mod routes;
 mod storage;
 
