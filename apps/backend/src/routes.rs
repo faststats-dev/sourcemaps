@@ -26,6 +26,14 @@ pub struct SourcemapEntry {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ProguardEntry {
+    #[serde(alias = "fileName")]
+    pub file_name: String,
+    #[serde(alias = "content")]
+    pub mapping: String,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "mappingType")]
 pub enum IngestPayload {
     #[serde(rename = "javascript")]
@@ -43,7 +51,13 @@ pub enum IngestPayload {
         build_id: String,
         #[serde(alias = "uploadedAt")]
         uploaded_at: String,
-        mapping: String,
+        #[serde(alias = "fileName")]
+        file_name: Option<String>,
+        mapping: Option<String>,
+        #[serde(default)]
+        mappings: Vec<ProguardEntry>,
+        #[serde(default)]
+        files: Vec<ProguardEntry>,
     },
 }
 
@@ -191,17 +205,34 @@ pub async fn ingest(
             build_id,
             uploaded_at,
             mapping,
+            file_name,
+            mappings,
+            files,
         } => {
-            require_non_empty("build_id", build_id)?;
-            require_non_empty("uploaded_at", uploaded_at)?;
-            require_non_empty("mapping", mapping)?;
-            crate::mappings::proguard::ingest(&state.storage, project_id, build_id, mapping)
+            let mappings = normalize_proguard_entries(
+                build_id,
+                uploaded_at,
+                file_name,
+                mapping,
+                mappings,
+                files,
+            )?;
+            crate::mappings::proguard::ingest(&state.storage, project_id, build_id, &mappings)
                 .await?;
-            let total_bytes = mapping.len();
+            let total_bytes: usize = mappings.iter().map(|(_, mapping)| mapping.len()).sum();
+            let file_names: Vec<&str> = mappings
+                .iter()
+                .map(|(file_name, _)| file_name.as_str())
+                .collect();
+            info!(
+                %project_id,
+                build_id,
+                files = ?file_names,
+            );
             (
                 build_id.as_str(),
                 uploaded_at.as_str(),
-                1,
+                mappings.len(),
                 total_bytes,
                 "proguard",
             )
@@ -412,6 +443,54 @@ fn validate_js_ingest(
     Ok(())
 }
 
+fn normalize_proguard_entries(
+    build_id: &str,
+    uploaded_at: &str,
+    file_name: &Option<String>,
+    mapping: &Option<String>,
+    mappings: &[ProguardEntry],
+    files: &[ProguardEntry],
+) -> Result<Vec<(String, String)>, AppError> {
+    require_non_empty("build_id", build_id)?;
+    require_non_empty("uploaded_at", uploaded_at)?;
+
+    let mut normalized =
+        Vec::with_capacity(mappings.len() + files.len() + usize::from(mapping.is_some()));
+    normalized.extend(
+        mappings
+            .iter()
+            .map(|entry| (entry.file_name.clone(), entry.mapping.clone())),
+    );
+    normalized.extend(
+        files
+            .iter()
+            .map(|entry| (entry.file_name.clone(), entry.mapping.clone())),
+    );
+
+    match (file_name.as_deref(), mapping.as_deref()) {
+        (Some(file_name), Some(mapping)) => {
+            normalized.push((file_name.to_string(), mapping.to_string()));
+        }
+        (Some(_), None) => return Err(AppError::BadRequest("mapping is required".into())),
+        (None, Some(mapping)) if normalized.is_empty() => {
+            normalized.push(("mapping.txt".to_string(), mapping.to_string()));
+        }
+        (None, Some(_)) => return Err(AppError::BadRequest("file_name is required".into())),
+        (None, None) => {}
+    }
+
+    if normalized.is_empty() {
+        return Err(AppError::BadRequest("no proguard mappings provided".into()));
+    }
+
+    for (file_name, mapping) in &normalized {
+        require_non_empty("file_name", file_name)?;
+        require_non_empty("mapping", mapping)?;
+    }
+
+    Ok(normalized)
+}
+
 fn parse_sourcemap_key(key: &str) -> Option<(String, String)> {
     let mut parts = key.splitn(3, '/');
     let _project_id = parts.next()?;
@@ -472,7 +551,10 @@ fn select_builds_for_cleanup(
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_build_ids, parse_sourcemap_key, select_builds_for_cleanup};
+    use super::{
+        ProguardEntry, normalize_proguard_entries, normalized_build_ids, parse_sourcemap_key,
+        select_builds_for_cleanup,
+    };
     use crate::mappings::{javascript::map_file_name, require_non_empty};
     use crate::storage::StoredObjectMeta;
 
@@ -488,6 +570,15 @@ mod tests {
         assert_eq!(
             parsed,
             Some(("build-42".to_string(), "chunk.js.map".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_sourcemap_key_keeps_nested_proguard_file_name() {
+        let parsed = parse_sourcemap_key("proj-id/build-42/proguard/base.txt");
+        assert_eq!(
+            parsed,
+            Some(("build-42".to_string(), "proguard/base.txt".to_string()))
         );
     }
 
@@ -510,6 +601,69 @@ mod tests {
             normalized,
             vec!["build-1".to_string(), "build-2".to_string()]
         );
+    }
+
+    #[test]
+    fn normalize_proguard_entries_accepts_multiple_named_files() {
+        let normalized = normalize_proguard_entries(
+            "build-1",
+            "2026-03-22T00:00:00Z",
+            &None,
+            &None,
+            &[ProguardEntry {
+                file_name: "base.txt".to_string(),
+                mapping: "one".to_string(),
+            }],
+            &[ProguardEntry {
+                file_name: "feature.txt".to_string(),
+                mapping: "two".to_string(),
+            }],
+        )
+        .expect("entries should normalize");
+
+        assert_eq!(
+            normalized,
+            vec![
+                ("base.txt".to_string(), "one".to_string()),
+                ("feature.txt".to_string(), "two".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_proguard_entries_keeps_legacy_single_mapping_compatible() {
+        let normalized = normalize_proguard_entries(
+            "build-1",
+            "2026-03-22T00:00:00Z",
+            &None,
+            &Some("contents".to_string()),
+            &[],
+            &[],
+        )
+        .expect("legacy payload should normalize");
+
+        assert_eq!(
+            normalized,
+            vec![("mapping.txt".to_string(), "contents".to_string())]
+        );
+    }
+
+    #[test]
+    fn normalize_proguard_entries_rejects_mixed_unnamed_mapping() {
+        let err = normalize_proguard_entries(
+            "build-1",
+            "2026-03-22T00:00:00Z",
+            &None,
+            &Some("contents".to_string()),
+            &[ProguardEntry {
+                file_name: "base.txt".to_string(),
+                mapping: "one".to_string(),
+            }],
+            &[],
+        )
+        .expect_err("mixed unnamed mapping should be rejected");
+
+        assert!(format!("{err}").contains("file_name is required"));
     }
 
     #[test]

@@ -10,7 +10,6 @@ use super::OriginalPosition;
 use super::s3_key;
 
 const PROGUARD_DIR: &str = "proguard";
-const PROGUARD_FILE_NAME: &str = "proguard/mapping.txt";
 
 /// A parsed proguard mapping file.
 struct ProguardMapping {
@@ -338,10 +337,14 @@ pub async fn ingest(
     storage: &Storage,
     project_id: Uuid,
     build_id: &str,
-    mapping: &str,
+    mappings: &[(String, String)],
 ) -> Result<(), AppError> {
-    let key = proguard_s3_key(project_id, build_id);
-    storage.put(&key, mapping.as_bytes()).await
+    for (file_name, mapping) in mappings {
+        let key = proguard_s3_key(project_id, build_id, file_name);
+        storage.put(&key, mapping.as_bytes()).await?;
+    }
+
+    Ok(())
 }
 
 pub fn retrace_stacktrace<'a>(
@@ -364,8 +367,8 @@ pub fn proguard_s3_prefix(project_id: Uuid, build_id: &str) -> String {
     s3_key(project_id, build_id, PROGUARD_DIR)
 }
 
-pub fn proguard_s3_key(project_id: Uuid, build_id: &str) -> String {
-    s3_key(project_id, build_id, PROGUARD_FILE_NAME)
+pub fn proguard_s3_key(project_id: Uuid, build_id: &str, file_name: &str) -> String {
+    s3_key(project_id, build_id, &format!("{PROGUARD_DIR}/{file_name}"))
 }
 
 #[cfg(test)]
@@ -567,6 +570,17 @@ java.lang.RuntimeException: oops
             "\
 \tat core.file.FileIO.reload(FileIO.java:92)
 \tat core.file.Validatable.validate(Validatable.java:26)"
+        );
+    }
+
+    #[test]
+    fn proguard_s3_key_uses_uploaded_file_name() {
+        let project_id = Uuid::nil();
+        let key = proguard_s3_key(project_id, "build-1", "base.txt");
+
+        assert_eq!(
+            key,
+            "00000000-0000-0000-0000-000000000000/build-1/proguard/base.txt"
         );
     }
 }
