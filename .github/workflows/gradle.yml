@@ -1,4 +1,4 @@
-name: Build
+name: Gradle Build
 on:
   pull_request:
     paths: [ "packages/proguard-plugin/**" ]
@@ -21,4 +21,4 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       - name: Build and Test with Gradle
-        run: ./gradlew build test
+        run: ./packages/proguard-plugin/gradlew build test
