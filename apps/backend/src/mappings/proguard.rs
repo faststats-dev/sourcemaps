@@ -148,6 +148,7 @@ impl ProguardMapping {
         };
         let qualified = &rest[..paren_start];
         let location = &rest[paren_start..];
+        let (class_prefix, qualified) = split_container_prefix(qualified);
 
         // Split into class + method on last '.'
         let Some(dot_pos) = qualified.rfind('.') else {
@@ -180,7 +181,7 @@ impl ProguardMapping {
             None => format!("({source_file})"),
         };
 
-        format!("{prefix}at {original_class}.{method_name}{location_str}")
+        format!("{prefix}at {class_prefix}{original_class}.{method_name}{location_str}")
     }
 
     fn retrace_exception_line(&self, line: &str) -> String {
@@ -200,9 +201,13 @@ impl ProguardMapping {
             .split_once(": ")
             .map(|(c, m)| (c, format!(": {m}")))
             .unwrap_or((class_and_rest, String::new()));
+        let (class_prefix, obf_class) = split_container_prefix(obf_class);
 
         if let Some(class) = self.classes.get(obf_class) {
-            format!("{prefix}{before_class}{}{suffix}", class.original_name)
+            format!(
+                "{prefix}{before_class}{class_prefix}{}{suffix}",
+                class.original_name
+            )
         } else {
             line.to_string()
         }
@@ -275,6 +280,14 @@ fn parse_class_line(line: &str) -> Option<(String, String)> {
     let line = line.strip_suffix(':')?;
     let (original, obfuscated) = line.split_once(" -> ")?;
     Some((original.trim().to_string(), obfuscated.trim().to_string()))
+}
+
+fn split_container_prefix(qualified: &str) -> (&str, &str) {
+    if let Some(slash_pos) = qualified.rfind('/') {
+        (&qualified[..=slash_pos], &qualified[slash_pos + 1..])
+    } else {
+        ("", qualified)
+    }
 }
 
 /// Parse member lines (methods and fields) and add to class mapping
@@ -587,6 +600,28 @@ java.lang.RuntimeException: oops
         let input = "\tat a.a.a.b(Unknown Source)";
         let output = mapping.retrace(input);
         assert_eq!(output, "\tat core.file.FileIO.load(FileIO.java)");
+    }
+
+    #[test]
+    fn retrace_stacktrace_with_container_prefix() {
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
+        let input = "\tat tweaks-3.3.6-obfuscated.jar//a.a.a.c(SourceFile:92)";
+        let output = mapping.retrace(input);
+        assert_eq!(
+            output,
+            "\tat tweaks-3.3.6-obfuscated.jar//core.file.FileIO.reload(FileIO.java:92)"
+        );
+    }
+
+    #[test]
+    fn retrace_caused_by_with_container_prefix() {
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
+        let input = "Caused by: tweaks-3.3.6-obfuscated.jar//a.a.a: some message";
+        let output = mapping.retrace(input);
+        assert_eq!(
+            output,
+            "Caused by: tweaks-3.3.6-obfuscated.jar//core.file.FileIO: some message"
+        );
     }
 
     #[test]
