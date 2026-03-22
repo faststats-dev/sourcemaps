@@ -19,25 +19,29 @@ use crate::storage::StoredObjectMeta;
 const INGEST_MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SourcemapEntry {
+    #[serde(alias = "fileName")]
     pub file_name: String,
     pub sourcemap: String,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "mappingType", rename_all = "camelCase")]
+#[serde(tag = "mappingType")]
 pub enum IngestPayload {
     #[serde(rename = "javascript")]
     JavaScript {
+        #[serde(alias = "buildId")]
         build_id: String,
         bundler: String,
+        #[serde(alias = "uploadedAt")]
         uploaded_at: String,
         sourcemaps: Vec<SourcemapEntry>,
     },
     #[serde(rename = "proguard")]
     Proguard {
+        #[serde(alias = "buildId")]
         build_id: String,
+        #[serde(alias = "uploadedAt")]
         uploaded_at: String,
         mapping: String,
     },
@@ -71,26 +75,29 @@ pub struct SourcemapListResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "mappingType", rename_all = "camelCase")]
+#[serde(tag = "mappingType")]
 pub enum ApplyPayload {
     #[serde(rename = "javascript")]
     JavaScript {
+        #[serde(alias = "buildId")]
         build_id: String,
+        #[serde(alias = "fileName")]
         file_name: String,
         line: u32,
         column: u32,
     },
     #[serde(rename = "proguard")]
     Proguard {
+        #[serde(alias = "buildId")]
         build_id: String,
         stacktrace: String,
     },
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CleanupPayload {
     #[serde(default)]
+    #[serde(alias = "excludedBuildIds")]
     pub excluded_build_ids: Vec<String>,
 }
 
