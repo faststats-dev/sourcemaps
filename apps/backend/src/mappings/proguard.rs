@@ -9,6 +9,7 @@ use crate::storage::Storage;
 use super::OriginalPosition;
 use super::s3_key;
 
+const PROGUARD_DIR: &str = "proguard";
 const PROGUARD_FILE_NAME: &str = "proguard/mapping.txt";
 
 /// A parsed proguard mapping file.
@@ -94,6 +95,17 @@ impl ProguardMapping {
         // Save last class
         if let Some((obfuscated, class)) = current_class {
             classes.insert(obfuscated, class);
+        }
+
+        Ok(ProguardMapping { classes })
+    }
+
+    fn parse_many<'a>(inputs: impl IntoIterator<Item = &'a str>) -> Result<Self, AppError> {
+        let mut classes = HashMap::new();
+
+        for input in inputs {
+            let mapping = Self::parse(input)?;
+            classes.extend(mapping.classes);
         }
 
         Ok(ProguardMapping { classes })
@@ -328,19 +340,42 @@ pub async fn ingest(
     build_id: &str,
     mapping: &str,
 ) -> Result<(), AppError> {
-    let key = s3_key(project_id, build_id, PROGUARD_FILE_NAME);
+    let key = proguard_s3_key(project_id, build_id);
     storage.put(&key, mapping.as_bytes()).await
 }
 
-pub fn retrace_stacktrace(data: &[u8], stacktrace: &str) -> Result<String, AppError> {
-    let content = std::str::from_utf8(data)
-        .map_err(|e| AppError::BadRequest(format!("invalid proguard mapping: {e}")))?;
-    let mapping = ProguardMapping::parse(content)?;
+pub fn retrace_stacktrace<'a>(
+    mapping_parts: impl IntoIterator<Item = &'a [u8]>,
+    stacktrace: &str,
+) -> Result<String, AppError> {
+    let mut contents = Vec::new();
+
+    for data in mapping_parts {
+        let content = std::str::from_utf8(data)
+            .map_err(|e| AppError::BadRequest(format!("invalid proguard mapping: {e}")))?;
+        contents.push(content);
+    }
+
+    let mapping = ProguardMapping::parse_many(contents)?;
     Ok(mapping.retrace(stacktrace))
+}
+
+pub fn proguard_s3_prefix(project_id: Uuid, build_id: &str) -> String {
+    s3_key(project_id, build_id, PROGUARD_DIR)
 }
 
 pub fn proguard_s3_key(project_id: Uuid, build_id: &str) -> String {
     s3_key(project_id, build_id, PROGUARD_FILE_NAME)
+}
+
+#[cfg(test)]
+fn parse_test_mapping(input: &str) -> ProguardMapping {
+    ProguardMapping::parse(input).unwrap()
+}
+
+#[cfg(test)]
+fn parse_test_mappings<'a>(inputs: impl IntoIterator<Item = &'a str>) -> ProguardMapping {
+    ProguardMapping::parse_many(inputs).unwrap()
 }
 
 #[cfg(test)]
@@ -368,7 +403,7 @@ core.file.Validatable -> a.a.b:
 
     #[test]
     fn parse_class_mappings() {
-        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
         assert!(mapping.classes.contains_key("a.a.a"));
         assert!(mapping.classes.contains_key("a.a.b"));
 
@@ -379,7 +414,7 @@ core.file.Validatable -> a.a.b:
 
     #[test]
     fn parse_field_mappings() {
-        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
         let file_io = &mapping.classes["a.a.a"];
         assert_eq!(file_io.fields.get("a"), Some(&"file".to_string()));
         assert_eq!(file_io.fields.get("b"), Some(&"charset".to_string()));
@@ -388,7 +423,7 @@ core.file.Validatable -> a.a.b:
 
     #[test]
     fn parse_method_mappings() {
-        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
         let file_io = &mapping.classes["a.a.a"];
 
         let init_methods: Vec<_> = file_io
@@ -405,14 +440,14 @@ core.file.Validatable -> a.a.b:
 
     #[test]
     fn resolve_class() {
-        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
         let result = mapping.resolve("a.a.a", None, None).unwrap();
         assert_eq!(result.source, "core.file.FileIO");
     }
 
     #[test]
     fn resolve_method_with_line() {
-        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
         let result = mapping.resolve("a.a.a", Some("c"), Some(92)).unwrap();
         assert_eq!(result.source, "core.file.FileIO");
         assert_eq!(result.name.as_deref(), Some("reload"));
@@ -420,7 +455,7 @@ core.file.Validatable -> a.a.b:
 
     #[test]
     fn resolve_method_without_line() {
-        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
         let result = mapping.resolve("a.a.a", Some("a"), None).unwrap();
         assert_eq!(result.source, "core.file.FileIO");
         // Should find one of the methods named "a" (setRoot or getRoot)
@@ -429,14 +464,14 @@ core.file.Validatable -> a.a.b:
 
     #[test]
     fn resolve_unknown_class() {
-        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
         let result = mapping.resolve("z.z.z", None, None);
         assert!(result.is_err());
     }
 
     #[test]
     fn retrace_stacktrace_full() {
-        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
         let input = "\
 java.lang.NullPointerException: something broke
 \tat a.a.a.c(SourceFile:92)
@@ -456,7 +491,7 @@ java.lang.NullPointerException: something broke
 
     #[test]
     fn retrace_preserves_unknown_lines() {
-        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
         let input = "\
 java.lang.RuntimeException: oops
 \tat a.a.a.c(SourceFile:92)
@@ -476,7 +511,7 @@ java.lang.RuntimeException: oops
 
     #[test]
     fn retrace_caused_by() {
-        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
         let input = "Caused by: a.a.a: some message";
         let output = mapping.retrace(input);
         assert_eq!(output, "Caused by: core.file.FileIO: some message");
@@ -484,9 +519,54 @@ java.lang.RuntimeException: oops
 
     #[test]
     fn retrace_unknown_source() {
-        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
         let input = "\tat a.a.a.c(Unknown Source)";
         let output = mapping.retrace(input);
         assert_eq!(output, "\tat core.file.FileIO.reload(FileIO.java)");
+    }
+
+    #[test]
+    fn parse_many_combines_split_mapping_files() {
+        const PART_ONE: &str = r#"core.file.FileIO -> a.a.a:
+# {"fileName":"FileIO.java","id":"sourceFile"}
+    92:92:core.file.FileIO reload() -> c
+"#;
+        const PART_TWO: &str = r#"core.file.Validatable -> a.a.b:
+# {"fileName":"Validatable.java","id":"sourceFile"}
+    26:26:core.file.FileIO validate() -> a_
+"#;
+
+        let mapping = parse_test_mappings([PART_ONE, PART_TWO]);
+
+        assert_eq!(mapping.classes["a.a.a"].original_name, "core.file.FileIO");
+        assert_eq!(
+            mapping.classes["a.a.b"].file_name.as_deref(),
+            Some("Validatable.java")
+        );
+    }
+
+    #[test]
+    fn retrace_stacktrace_uses_all_mapping_parts() {
+        const PART_ONE: &str = r#"core.file.FileIO -> a.a.a:
+# {"fileName":"FileIO.java","id":"sourceFile"}
+    92:92:core.file.FileIO reload() -> c
+"#;
+        const PART_TWO: &str = r#"core.file.Validatable -> a.a.b:
+# {"fileName":"Validatable.java","id":"sourceFile"}
+    26:26:core.file.FileIO validate() -> a_
+"#;
+
+        let input = "\
+\tat a.a.a.c(SourceFile:92)
+\tat a.a.b.a_(SourceFile:26)";
+
+        let output = retrace_stacktrace([PART_ONE.as_bytes(), PART_TWO.as_bytes()], input).unwrap();
+
+        assert_eq!(
+            output,
+            "\
+\tat core.file.FileIO.reload(FileIO.java:92)
+\tat core.file.Validatable.validate(Validatable.java:26)"
+        );
     }
 }

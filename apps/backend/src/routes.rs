@@ -317,9 +317,22 @@ pub async fn apply_sourcemap(
         } => {
             require_non_empty("build_id", build_id)?;
             require_non_empty("stacktrace", stacktrace)?;
-            let key = crate::mappings::proguard::proguard_s3_key(auth.project_id, build_id);
-            let data = state.storage.get(&key).await?;
-            let retraced = crate::mappings::proguard::retrace_stacktrace(&data, stacktrace)?;
+            let prefix = crate::mappings::proguard::proguard_s3_prefix(auth.project_id, build_id);
+            let mut keys = state.storage.list_prefix_keys(&prefix).await?;
+            keys.sort_unstable();
+            if keys.is_empty() {
+                return Err(AppError::NotFound);
+            }
+
+            let mut mappings = Vec::with_capacity(keys.len());
+            for key in keys {
+                mappings.push(state.storage.get(&key).await?);
+            }
+
+            let retraced = crate::mappings::proguard::retrace_stacktrace(
+                mappings.iter().map(Vec::as_slice),
+                stacktrace,
+            )?;
             ApplyResponse::Proguard {
                 ok: true,
                 stacktrace: retraced,
