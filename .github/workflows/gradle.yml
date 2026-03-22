@@ -21,4 +21,5 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       - name: Build and Test with Gradle
-        run: ./packages/proguard-plugin/gradlew build test
+        working-directory: packages/proguard-plugin
+        run: ./gradlew build test
