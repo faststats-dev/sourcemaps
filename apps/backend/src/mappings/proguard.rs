@@ -49,14 +49,12 @@ impl ProguardMapping {
             if line.starts_with('#') {
                 if let Some((_, ref mut class)) = current_class {
                     // Try to extract fileName from JSON comment
-                    if let Some(json_start) = line.find('{') {
-                        if let Ok(meta) =
+                    if let Some(json_start) = line.find('{')
+                        && let Ok(meta) =
                             serde_json::from_str::<serde_json::Value>(&line[json_start..])
-                        {
-                            if let Some(file_name) = meta.get("fileName").and_then(|v| v.as_str()) {
-                                class.file_name = Some(file_name.to_string());
-                            }
-                        }
+                        && let Some(file_name) = meta.get("fileName").and_then(|v| v.as_str())
+                    {
+                        class.file_name = Some(file_name.to_string());
                     }
                 }
                 continue;
@@ -192,7 +190,7 @@ fn parse_method_with_lines(s: &str) -> Option<ParsedMethod> {
     let rest = if let Some(colon_pos) = rest.find(':') {
         // Check if what follows the colon is digits (inline mapping)
         let after = &rest[colon_pos + 1..];
-        if after.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
             &rest[..colon_pos]
         } else {
             rest

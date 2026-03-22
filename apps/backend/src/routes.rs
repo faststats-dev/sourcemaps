@@ -149,7 +149,7 @@ pub async fn ingest(
     let (build_id, uploaded_at, ingested, total_bytes, mapping_type) = match &payload {
         IngestPayload::JavaScript {
             build_id,
-            bundler: _,
+            bundler,
             uploaded_at,
             sourcemaps,
         } => {
@@ -161,6 +161,14 @@ pub async fn ingest(
             crate::mappings::javascript::ingest(&state.storage, project_id, build_id, &entries)
                 .await?;
             let total_bytes: usize = sourcemaps.iter().map(|e| e.sourcemap.len()).sum();
+            let file_names: Vec<&str> =
+                sourcemaps.iter().map(|e| e.file_name.as_str()).collect();
+            info!(
+                %project_id,
+                build_id,
+                %bundler,
+                files = ?file_names,
+            );
             (
                 build_id.as_str(),
                 uploaded_at.as_str(),

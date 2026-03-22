@@ -1,17 +1,10 @@
 pub mod javascript;
 pub mod proguard;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::error::AppError;
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum MappingType {
-    JavaScript,
-    Proguard,
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
