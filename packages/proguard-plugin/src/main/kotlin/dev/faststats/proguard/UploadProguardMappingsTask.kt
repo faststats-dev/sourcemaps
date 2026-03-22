@@ -127,9 +127,8 @@ abstract class UploadProguardMappingsTask : DefaultTask() {
         fun toPayload(sectionContent: String, fileName: String) = SourcemapUploadPayload(
             buildId = resolvedBuildId,
             mappingType = "proguard",
-            mapping = "proguard",
             uploadedAt = uploadedAt,
-            sourcemaps = listOf(SourcemapUpload(fileName = fileName, sourcemap = sectionContent)),
+            mappings = listOf(SourcemapUpload(fileName = fileName, mapping = sectionContent)),
         )
 
         fun payloadSize(sectionContent: String): Long = gson.toJson(toPayload(sectionContent, file.name))
