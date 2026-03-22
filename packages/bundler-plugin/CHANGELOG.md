@@ -1,5 +1,11 @@
 # @faststats/sourcemap-uploader-plugin
 
+## 0.3.2
+
+### Patch Changes
+
+- 827763b: fix: add javascript as mapping type
+
 ## 0.3.1
 
 ### Patch Changes
