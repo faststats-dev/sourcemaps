@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::SharedState;
 use crate::auth::{AdminAuthenticatedProject, AuthenticatedProject};
 use crate::error::AppError;
+use crate::mappings::{require_non_empty, s3_key};
 use crate::storage::StoredObjectMeta;
 
 const INGEST_MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
@@ -25,12 +26,21 @@ pub struct SourcemapEntry {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IngestPayload {
-    pub build_id: String,
-    pub bundler: String,
-    pub uploaded_at: String,
-    pub sourcemaps: Vec<SourcemapEntry>,
+#[serde(tag = "mappingType", rename_all = "camelCase")]
+pub enum IngestPayload {
+    #[serde(rename = "javascript")]
+    JavaScript {
+        build_id: String,
+        bundler: String,
+        uploaded_at: String,
+        sourcemaps: Vec<SourcemapEntry>,
+    },
+    #[serde(rename = "proguard")]
+    Proguard {
+        build_id: String,
+        uploaded_at: String,
+        mapping: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -61,12 +71,22 @@ pub struct SourcemapListResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApplyPayload {
-    pub build_id: String,
-    pub file_name: String,
-    pub line: u32,
-    pub column: u32,
+#[serde(tag = "mappingType", rename_all = "camelCase")]
+pub enum ApplyPayload {
+    #[serde(rename = "javascript")]
+    JavaScript {
+        build_id: String,
+        file_name: String,
+        line: u32,
+        column: u32,
+    },
+    #[serde(rename = "proguard")]
+    Proguard {
+        build_id: String,
+        class_name: String,
+        method_name: Option<String>,
+        line: Option<u32>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,18 +98,9 @@ pub struct CleanupPayload {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OriginalPosition {
-    pub source: String,
-    pub line: u32,
-    pub column: u32,
-    pub name: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ApplyResponse {
     pub ok: bool,
-    pub original: OriginalPosition,
+    pub original: crate::mappings::OriginalPosition,
 }
 
 #[derive(Serialize)]
@@ -124,10 +135,6 @@ pub fn internal_router(state: SharedState) -> Router {
         .with_state(state)
 }
 
-fn s3_key(project_id: Uuid, build_id: &str, file_name: &str) -> String {
-    format!("{project_id}/{build_id}/{file_name}")
-}
-
 pub async fn health() -> &'static str {
     "ok"
 }
@@ -137,41 +144,61 @@ pub async fn ingest(
     State(state): State<SharedState>,
     Json(payload): Json<IngestPayload>,
 ) -> Result<(StatusCode, Json<IngestResponse>), AppError> {
-    validate_ingest_payload(&payload)?;
-
     let project_id = auth.project_id;
 
-    for entry in &payload.sourcemaps {
-        let key = s3_key(project_id, &payload.build_id, &entry.file_name);
+    let (build_id, uploaded_at, ingested, total_bytes, mapping_type) = match &payload {
+        IngestPayload::JavaScript {
+            build_id,
+            bundler: _,
+            uploaded_at,
+            sourcemaps,
+        } => {
+            validate_js_ingest(build_id, uploaded_at, sourcemaps)?;
+            let entries: Vec<(String, String)> = sourcemaps
+                .iter()
+                .map(|e| (e.file_name.clone(), e.sourcemap.clone()))
+                .collect();
+            crate::mappings::javascript::ingest(&state.storage, project_id, build_id, &entries)
+                .await?;
+            let total_bytes: usize = sourcemaps.iter().map(|e| e.sourcemap.len()).sum();
+            (
+                build_id.as_str(),
+                uploaded_at.as_str(),
+                sourcemaps.len(),
+                total_bytes,
+                "javascript",
+            )
+        }
+        IngestPayload::Proguard {
+            build_id,
+            uploaded_at,
+            mapping,
+        } => {
+            require_non_empty("build_id", build_id)?;
+            require_non_empty("uploaded_at", uploaded_at)?;
+            require_non_empty("mapping", mapping)?;
+            crate::mappings::proguard::ingest(&state.storage, project_id, build_id, mapping)
+                .await?;
+            let total_bytes = mapping.len();
+            (
+                build_id.as_str(),
+                uploaded_at.as_str(),
+                1,
+                total_bytes,
+                "proguard",
+            )
+        }
+    };
 
-        state.storage.put(&key, entry.sourcemap.as_bytes()).await?;
-    }
-
-    record_build_id(
-        &state.db,
-        project_id,
-        &payload.build_id,
-        &payload.uploaded_at,
-    )
-    .await?;
-
-    let ingested = payload.sourcemaps.len();
-    let total_bytes: usize = payload.sourcemaps.iter().map(|e| e.sourcemap.len()).sum();
-    let file_names: Vec<&str> = payload
-        .sourcemaps
-        .iter()
-        .map(|e| e.file_name.as_str())
-        .collect();
+    record_build_id(&state.db, project_id, build_id, uploaded_at).await?;
 
     info!(
         %project_id,
-        build_id = %payload.build_id,
-        bundler = %payload.bundler,
-        uploaded_at = %payload.uploaded_at,
+        build_id,
+        mapping_type,
         count = ingested,
         total_bytes,
-        files = ?file_names,
-        "ingested sourcemaps"
+        "ingested mappings"
     );
 
     Ok((
@@ -258,37 +285,35 @@ pub async fn apply_sourcemap(
     State(state): State<SharedState>,
     Json(payload): Json<ApplyPayload>,
 ) -> Result<Json<ApplyResponse>, AppError> {
-    require_non_empty("build_id", &payload.build_id)?;
-    require_non_empty("file_name", &payload.file_name)?;
+    let original = match &payload {
+        ApplyPayload::JavaScript {
+            build_id,
+            file_name,
+            line,
+            column,
+        } => {
+            require_non_empty("build_id", build_id)?;
+            require_non_empty("file_name", file_name)?;
+            let map_file = crate::mappings::javascript::map_file_name(file_name);
+            let key = s3_key(auth.project_id, build_id, &map_file);
+            let data = state.storage.get(&key).await?;
+            crate::mappings::javascript::apply(&data, file_name, *line, *column)?
+        }
+        ApplyPayload::Proguard {
+            build_id,
+            class_name,
+            method_name,
+            line,
+        } => {
+            require_non_empty("build_id", build_id)?;
+            require_non_empty("class_name", class_name)?;
+            let key = crate::mappings::proguard::proguard_s3_key(auth.project_id, build_id);
+            let data = state.storage.get(&key).await?;
+            crate::mappings::proguard::apply(&data, class_name, method_name.as_deref(), *line)?
+        }
+    };
 
-    let map_file = map_file_name(&payload.file_name);
-    let key = s3_key(auth.project_id, &payload.build_id, &map_file);
-    let data = state.storage.get(&key).await?;
-    let source_map = sourcemap::SourceMap::from_slice(&data)
-        .map_err(|e| AppError::BadRequest(format!("invalid sourcemap: {e}")))?;
-    let token = source_map
-        .lookup_token(
-            payload.line.saturating_sub(1),
-            payload.column.saturating_sub(1),
-        )
-        .ok_or(AppError::NotFound)?;
-    let source = token.get_source().ok_or(AppError::NotFound)?;
-    let src_line = token.get_src_line();
-    let src_col = token.get_src_col();
-
-    if src_line == u32::MAX || src_col == u32::MAX {
-        return Err(AppError::NotFound);
-    }
-
-    Ok(Json(ApplyResponse {
-        ok: true,
-        original: OriginalPosition {
-            source: source.to_string(),
-            line: src_line.saturating_add(1),
-            column: src_col.saturating_add(1),
-            name: token.get_name().map(ToString::to_string),
-        },
-    }))
+    Ok(Json(ApplyResponse { ok: true, original }))
 }
 
 pub async fn cleanup_old_builds(
@@ -336,33 +361,20 @@ pub async fn cleanup_old_builds(
     }))
 }
 
-fn map_file_name(file_name: &str) -> String {
-    if file_name.ends_with(".map") {
-        file_name.to_string()
-    } else {
-        format!("{file_name}.map")
-    }
-}
-
-fn require_non_empty(field: &str, value: &str) -> Result<(), AppError> {
-    if value.trim().is_empty() {
-        return Err(AppError::BadRequest(format!("{field} is required")));
-    }
-    Ok(())
-}
-
-fn validate_ingest_payload(payload: &IngestPayload) -> Result<(), AppError> {
-    require_non_empty("build_id", &payload.build_id)?;
-    require_non_empty("uploaded_at", &payload.uploaded_at)?;
-    if payload.sourcemaps.is_empty() {
+fn validate_js_ingest(
+    build_id: &str,
+    uploaded_at: &str,
+    sourcemaps: &[SourcemapEntry],
+) -> Result<(), AppError> {
+    require_non_empty("build_id", build_id)?;
+    require_non_empty("uploaded_at", uploaded_at)?;
+    if sourcemaps.is_empty() {
         return Err(AppError::BadRequest("no sourcemaps provided".into()));
     }
-
-    for entry in &payload.sourcemaps {
+    for entry in sourcemaps {
         require_non_empty("file_name", &entry.file_name)?;
         require_non_empty("sourcemap", &entry.sourcemap)?;
     }
-
     Ok(())
 }
 
@@ -426,10 +438,8 @@ fn select_builds_for_cleanup(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        map_file_name, normalized_build_ids, parse_sourcemap_key, require_non_empty,
-        select_builds_for_cleanup,
-    };
+    use super::{normalized_build_ids, parse_sourcemap_key, select_builds_for_cleanup};
+    use crate::mappings::{javascript::map_file_name, require_non_empty};
     use crate::storage::StoredObjectMeta;
 
     #[test]
