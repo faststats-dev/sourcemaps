@@ -2,6 +2,7 @@ package dev.faststats.proguard
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
+import org.gradle.jvm.tasks.Jar
 
 class FastStatsProguardPlugin : Plugin<Project> {
 
@@ -32,6 +33,10 @@ class FastStatsProguardPlugin : Plugin<Project> {
             task.mappingFiles.from(extension.mappingFiles)
         }
 
+        project.tasks.withType(Jar::class.java).configureEach { jar ->
+            jar.manifest.attributes(mapOf("FastStats-Build-Id" to extension.buildId))
+        }
+
         project.afterEvaluate {
             if (extension.proguardTask.isPresent) {
                 uploadTask.configure { task ->
@@ -51,7 +56,7 @@ class FastStatsProguardPlugin : Plugin<Project> {
         try {
             val androidExtension = project.extensions.findByName("android") ?: return
 
-            val appExtension = try { 
+            val appExtension = try {
                 androidExtension as com.android.build.gradle.AppExtension
             } catch (_: ClassCastException) {
                 return
