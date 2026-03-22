@@ -30,8 +30,8 @@ struct ClassMapping {
 struct MethodMapping {
     original_name: String,
     obfuscated_name: String,
-    start_line: u32,
-    end_line: u32,
+    start_line: Option<u32>,
+    end_line: Option<u32>,
 }
 
 impl ProguardMapping {
@@ -100,11 +100,17 @@ impl ProguardMapping {
     }
 
     fn parse_many<'a>(inputs: impl IntoIterator<Item = &'a str>) -> Result<Self, AppError> {
-        let mut classes = HashMap::new();
+        let mut classes: HashMap<String, ClassMapping> = HashMap::new();
 
         for input in inputs {
             let mapping = Self::parse(input)?;
-            classes.extend(mapping.classes);
+            for (obfuscated_name, class) in mapping.classes {
+                if let Some(existing) = classes.get_mut(&obfuscated_name) {
+                    existing.merge(class);
+                } else {
+                    classes.insert(obfuscated_name, class);
+                }
+            }
         }
 
         Ok(ProguardMapping { classes })
@@ -214,8 +220,11 @@ impl ProguardMapping {
                 .iter()
                 .find(|m| {
                     m.obfuscated_name == obf_method
-                        && line_num >= m.start_line
-                        && line_num <= m.end_line
+                        && matches!(
+                            (m.start_line, m.end_line),
+                            (Some(start_line), Some(end_line))
+                                if line_num >= start_line && line_num <= end_line
+                        )
                 })
                 .or_else(|| {
                     class
@@ -251,6 +260,16 @@ impl ProguardMapping {
     }
 }
 
+impl ClassMapping {
+    fn merge(&mut self, other: ClassMapping) {
+        if self.file_name.is_none() {
+            self.file_name = other.file_name;
+        }
+        self.methods.extend(other.methods);
+        self.fields.extend(other.fields);
+    }
+}
+
 /// Parse "original.Class -> obfuscated.Class:" into (original, obfuscated)
 fn parse_class_line(line: &str) -> Option<(String, String)> {
     let line = line.strip_suffix(':')?;
@@ -274,11 +293,18 @@ fn parse_member_line(line: &str, class: &mut ClassMapping) {
         class.methods.push(MethodMapping {
             original_name: method.name,
             obfuscated_name: obfuscated,
-            start_line: method.start_line,
-            end_line: method.end_line,
+            start_line: Some(method.start_line),
+            end_line: Some(method.end_line),
         });
     } else if original_part.contains('(') {
-        // Method without line numbers — no range info to store
+        if let Some(method_name) = parse_method_name(original_part) {
+            class.methods.push(MethodMapping {
+                original_name: method_name,
+                obfuscated_name: obfuscated,
+                start_line: None,
+                end_line: None,
+            });
+        }
     } else {
         // Field mapping: "type fieldName -> obfuscated"
         // We just need the field name (last token before ->)
@@ -293,6 +319,17 @@ struct ParsedMethod {
     name: String,
     start_line: u32,
     end_line: u32,
+}
+
+fn parse_method_name(s: &str) -> Option<String> {
+    let s = s.trim();
+    let paren_pos = s.find('(')?;
+    let before_paren = &s[..paren_pos];
+    let method_name = before_paren
+        .rsplit_once(' ')
+        .map(|(_, name)| name)
+        .unwrap_or(before_paren);
+    Some(method_name.to_string())
 }
 
 fn parse_method_with_lines(s: &str) -> Option<ParsedMethod> {
@@ -435,10 +472,26 @@ core.file.Validatable -> a.a.b:
             .filter(|m| m.obfuscated_name == "<init>")
             .collect();
         assert_eq!(init_methods.len(), 2);
-        assert_eq!(init_methods[0].start_line, 29);
-        assert_eq!(init_methods[0].end_line, 33);
-        assert_eq!(init_methods[1].start_line, 42);
-        assert_eq!(init_methods[1].end_line, 43);
+        assert_eq!(init_methods[0].start_line, Some(29));
+        assert_eq!(init_methods[0].end_line, Some(33));
+        assert_eq!(init_methods[1].start_line, Some(42));
+        assert_eq!(init_methods[1].end_line, Some(43));
+    }
+
+    #[test]
+    fn parse_method_mappings_without_line_numbers() {
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
+        let file_io = &mapping.classes["a.a.a"];
+
+        let load_method = file_io
+            .methods
+            .iter()
+            .find(|m| m.obfuscated_name == "b")
+            .expect("load method should be retained");
+
+        assert_eq!(load_method.original_name, "load");
+        assert_eq!(load_method.start_line, None);
+        assert_eq!(load_method.end_line, None);
     }
 
     #[test]
@@ -529,6 +582,14 @@ java.lang.RuntimeException: oops
     }
 
     #[test]
+    fn retrace_unknown_source_uses_method_without_line_numbers() {
+        let mapping = parse_test_mapping(SAMPLE_MAPPING);
+        let input = "\tat a.a.a.b(Unknown Source)";
+        let output = mapping.retrace(input);
+        assert_eq!(output, "\tat core.file.FileIO.load(FileIO.java)");
+    }
+
+    #[test]
     fn parse_many_combines_split_mapping_files() {
         const PART_ONE: &str = r#"core.file.FileIO -> a.a.a:
 # {"fileName":"FileIO.java","id":"sourceFile"}
@@ -545,6 +606,29 @@ java.lang.RuntimeException: oops
         assert_eq!(
             mapping.classes["a.a.b"].file_name.as_deref(),
             Some("Validatable.java")
+        );
+    }
+
+    #[test]
+    fn parse_many_merges_split_class_mappings() {
+        const PART_ONE: &str = r#"core.file.FileIO -> a.a.a:
+# {"fileName":"FileIO.java","id":"sourceFile"}
+    92:92:core.file.FileIO reload() -> c
+"#;
+        const PART_TWO: &str = r#"core.file.FileIO -> a.a.a:
+    java.lang.Object load() -> b
+"#;
+
+        let mapping = parse_test_mappings([PART_ONE, PART_TWO]);
+        let file_io = &mapping.classes["a.a.a"];
+
+        assert_eq!(file_io.file_name.as_deref(), Some("FileIO.java"));
+        assert!(file_io.methods.iter().any(|m| m.obfuscated_name == "c"));
+        assert!(
+            file_io
+                .methods
+                .iter()
+                .any(|m| m.obfuscated_name == "b" && m.original_name == "load")
         );
     }
 
