@@ -34,7 +34,10 @@ class FastStatsProguardPlugin : Plugin<Project> {
         }
 
         project.tasks.withType(Jar::class.java).configureEach { jar ->
-            jar.manifest.attributes(mapOf("FastStats-Build-Id" to extension.buildId))
+            jar.inputs.property("faststats.buildId", extension.buildId)
+            jar.filesMatching("META-INF/faststats.properties") { file ->
+                file.filter(mapOf("buildId" to extension.buildId.get()), BuildIdFilter::class.java)
+            }
         }
 
         project.afterEvaluate {
