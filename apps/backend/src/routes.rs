@@ -161,8 +161,7 @@ pub async fn ingest(
             crate::mappings::javascript::ingest(&state.storage, project_id, build_id, &entries)
                 .await?;
             let total_bytes: usize = sourcemaps.iter().map(|e| e.sourcemap.len()).sum();
-            let file_names: Vec<&str> =
-                sourcemaps.iter().map(|e| e.file_name.as_str()).collect();
+            let file_names: Vec<&str> = sourcemaps.iter().map(|e| e.file_name.as_str()).collect();
             info!(
                 %project_id,
                 build_id,
