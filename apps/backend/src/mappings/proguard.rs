@@ -5,7 +5,9 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::storage::Storage;
 
-use super::{OriginalPosition, s3_key};
+#[cfg(test)]
+use super::OriginalPosition;
+use super::s3_key;
 
 const PROGUARD_FILE_NAME: &str = "proguard/mapping.txt";
 
@@ -97,6 +99,128 @@ impl ProguardMapping {
         Ok(ProguardMapping { classes })
     }
 
+    fn retrace(&self, stacktrace: &str) -> String {
+        let mut output = String::with_capacity(stacktrace.len());
+        for (i, line) in stacktrace.lines().enumerate() {
+            if i > 0 {
+                output.push('\n');
+            }
+            output.push_str(&self.retrace_line(line));
+        }
+        // Preserve trailing newline if present
+        if stacktrace.ends_with('\n') {
+            output.push('\n');
+        }
+        output
+    }
+
+    fn retrace_line(&self, line: &str) -> String {
+        // Match "at <class>.<method>(<source>)" with optional leading whitespace
+        let trimmed = line.trim_start();
+        let prefix = &line[..line.len() - trimmed.len()];
+
+        let Some(rest) = trimmed.strip_prefix("at ") else {
+            // Not a stack frame line — try to retrace exception class name
+            // e.g. "java.lang.NullPointerException: message" or "Caused by: a.b.c: msg"
+            return self.retrace_exception_line(line);
+        };
+
+        // Parse "package.Class.method(Source:line)" or "package.Class.method(Unknown Source)"
+        let Some(paren_start) = rest.find('(') else {
+            return line.to_string();
+        };
+        let qualified = &rest[..paren_start];
+        let location = &rest[paren_start..];
+
+        // Split into class + method on last '.'
+        let Some(dot_pos) = qualified.rfind('.') else {
+            return line.to_string();
+        };
+        let obf_class = &qualified[..dot_pos];
+        let obf_method = &qualified[dot_pos + 1..];
+
+        // Extract line number from location like "(SourceFile:92)" or "(Unknown Source)"
+        let line_num = location
+            .trim_start_matches('(')
+            .trim_end_matches(')')
+            .rsplit_once(':')
+            .and_then(|(_, num)| num.parse::<u32>().ok());
+
+        let Some(class) = self.classes.get(obf_class) else {
+            return line.to_string();
+        };
+
+        let original_class = &class.original_name;
+        let resolved_method = self.resolve_method(class, obf_method, line_num);
+        let method_name = resolved_method
+            .map(|m| m.original_name.as_str())
+            .unwrap_or(obf_method);
+
+        let source_file = class.file_name.as_deref().unwrap_or("Unknown Source");
+
+        let location_str = match line_num {
+            Some(n) => format!("({source_file}:{n})"),
+            None => format!("({source_file})"),
+        };
+
+        format!("{prefix}at {original_class}.{method_name}{location_str}")
+    }
+
+    fn retrace_exception_line(&self, line: &str) -> String {
+        // Handle "Caused by: a.b.c: message" or "a.b.c: message" or "a.b.c"
+        let trimmed = line.trim_start();
+        let prefix = &line[..line.len() - trimmed.len()];
+
+        let (before_class, class_and_rest) = if let Some(rest) = trimmed.strip_prefix("Caused by: ")
+        {
+            ("Caused by: ", rest)
+        } else {
+            ("", trimmed)
+        };
+
+        // Extract class name (everything before first ": " or end of string)
+        let (obf_class, suffix) = class_and_rest
+            .split_once(": ")
+            .map(|(c, m)| (c, format!(": {m}")))
+            .unwrap_or((class_and_rest, String::new()));
+
+        if let Some(class) = self.classes.get(obf_class) {
+            format!("{prefix}{before_class}{}{suffix}", class.original_name)
+        } else {
+            line.to_string()
+        }
+    }
+
+    fn resolve_method<'a>(
+        &'a self,
+        class: &'a ClassMapping,
+        obf_method: &str,
+        line: Option<u32>,
+    ) -> Option<&'a MethodMapping> {
+        if let Some(line_num) = line {
+            class
+                .methods
+                .iter()
+                .find(|m| {
+                    m.obfuscated_name == obf_method
+                        && line_num >= m.start_line
+                        && line_num <= m.end_line
+                })
+                .or_else(|| {
+                    class
+                        .methods
+                        .iter()
+                        .find(|m| m.obfuscated_name == obf_method)
+                })
+        } else {
+            class
+                .methods
+                .iter()
+                .find(|m| m.obfuscated_name == obf_method)
+        }
+    }
+
+    #[cfg(test)]
     fn resolve(
         &self,
         class_name: &str,
@@ -104,25 +228,8 @@ impl ProguardMapping {
         line: Option<u32>,
     ) -> Result<OriginalPosition, AppError> {
         let class = self.classes.get(class_name).ok_or(AppError::NotFound)?;
-
-        let resolved_method = method_name.and_then(|method| {
-            // Find best matching method by line number
-            if let Some(line_num) = line {
-                class
-                    .methods
-                    .iter()
-                    .find(|m| {
-                        m.obfuscated_name == method
-                            && line_num >= m.start_line
-                            && line_num <= m.end_line
-                    })
-                    .or_else(|| class.methods.iter().find(|m| m.obfuscated_name == method))
-            } else {
-                class.methods.iter().find(|m| m.obfuscated_name == method)
-            }
-        });
-
-        let _source = class.file_name.as_deref().unwrap_or(&class.original_name);
+        let resolved_method =
+            method_name.and_then(|method| self.resolve_method(class, method, line));
 
         Ok(OriginalPosition {
             source: class.original_name.clone(),
@@ -225,16 +332,11 @@ pub async fn ingest(
     storage.put(&key, mapping.as_bytes()).await
 }
 
-pub fn apply(
-    data: &[u8],
-    class_name: &str,
-    method_name: Option<&str>,
-    line: Option<u32>,
-) -> Result<OriginalPosition, AppError> {
+pub fn retrace_stacktrace(data: &[u8], stacktrace: &str) -> Result<String, AppError> {
     let content = std::str::from_utf8(data)
         .map_err(|e| AppError::BadRequest(format!("invalid proguard mapping: {e}")))?;
     let mapping = ProguardMapping::parse(content)?;
-    mapping.resolve(class_name, method_name, line)
+    Ok(mapping.retrace(stacktrace))
 }
 
 pub fn proguard_s3_key(project_id: Uuid, build_id: &str) -> String {
@@ -330,5 +432,61 @@ core.file.Validatable -> a.a.b:
         let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
         let result = mapping.resolve("z.z.z", None, None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn retrace_stacktrace_full() {
+        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let input = "\
+java.lang.NullPointerException: something broke
+\tat a.a.a.c(SourceFile:92)
+\tat a.a.a.<init>(SourceFile:30)
+\tat a.a.b.a_(SourceFile:26)";
+
+        let output = mapping.retrace(input);
+        assert_eq!(
+            output,
+            "\
+java.lang.NullPointerException: something broke
+\tat core.file.FileIO.reload(FileIO.java:92)
+\tat core.file.FileIO.<init>(FileIO.java:30)
+\tat core.file.Validatable.validate(Validatable.java:26)"
+        );
+    }
+
+    #[test]
+    fn retrace_preserves_unknown_lines() {
+        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let input = "\
+java.lang.RuntimeException: oops
+\tat a.a.a.c(SourceFile:92)
+\tat com.unknown.Foo.bar(Foo.java:10)
+\t... 3 more";
+
+        let output = mapping.retrace(input);
+        assert_eq!(
+            output,
+            "\
+java.lang.RuntimeException: oops
+\tat core.file.FileIO.reload(FileIO.java:92)
+\tat com.unknown.Foo.bar(Foo.java:10)
+\t... 3 more"
+        );
+    }
+
+    #[test]
+    fn retrace_caused_by() {
+        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let input = "Caused by: a.a.a: some message";
+        let output = mapping.retrace(input);
+        assert_eq!(output, "Caused by: core.file.FileIO: some message");
+    }
+
+    #[test]
+    fn retrace_unknown_source() {
+        let mapping = ProguardMapping::parse(SAMPLE_MAPPING).unwrap();
+        let input = "\tat a.a.a.c(Unknown Source)";
+        let output = mapping.retrace(input);
+        assert_eq!(output, "\tat core.file.FileIO.reload(FileIO.java)");
     }
 }

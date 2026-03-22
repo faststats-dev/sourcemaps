@@ -83,9 +83,7 @@ pub enum ApplyPayload {
     #[serde(rename = "proguard")]
     Proguard {
         build_id: String,
-        class_name: String,
-        method_name: Option<String>,
-        line: Option<u32>,
+        stacktrace: String,
     },
 }
 
@@ -97,10 +95,16 @@ pub struct CleanupPayload {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApplyResponse {
-    pub ok: bool,
-    pub original: crate::mappings::OriginalPosition,
+#[serde(untagged)]
+pub enum ApplyResponse {
+    JavaScript {
+        ok: bool,
+        original: crate::mappings::OriginalPosition,
+    },
+    Proguard {
+        ok: bool,
+        stacktrace: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -292,7 +296,7 @@ pub async fn apply_sourcemap(
     State(state): State<SharedState>,
     Json(payload): Json<ApplyPayload>,
 ) -> Result<Json<ApplyResponse>, AppError> {
-    let original = match &payload {
+    let response = match &payload {
         ApplyPayload::JavaScript {
             build_id,
             file_name,
@@ -304,23 +308,26 @@ pub async fn apply_sourcemap(
             let map_file = crate::mappings::javascript::map_file_name(file_name);
             let key = s3_key(auth.project_id, build_id, &map_file);
             let data = state.storage.get(&key).await?;
-            crate::mappings::javascript::apply(&data, file_name, *line, *column)?
+            let original = crate::mappings::javascript::apply(&data, file_name, *line, *column)?;
+            ApplyResponse::JavaScript { ok: true, original }
         }
         ApplyPayload::Proguard {
             build_id,
-            class_name,
-            method_name,
-            line,
+            stacktrace,
         } => {
             require_non_empty("build_id", build_id)?;
-            require_non_empty("class_name", class_name)?;
+            require_non_empty("stacktrace", stacktrace)?;
             let key = crate::mappings::proguard::proguard_s3_key(auth.project_id, build_id);
             let data = state.storage.get(&key).await?;
-            crate::mappings::proguard::apply(&data, class_name, method_name.as_deref(), *line)?
+            let retraced = crate::mappings::proguard::retrace_stacktrace(&data, stacktrace)?;
+            ApplyResponse::Proguard {
+                ok: true,
+                stacktrace: retraced,
+            }
         }
     };
 
-    Ok(Json(ApplyResponse { ok: true, original }))
+    Ok(Json(response))
 }
 
 pub async fn cleanup_old_builds(
