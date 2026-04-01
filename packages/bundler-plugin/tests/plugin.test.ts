@@ -23,10 +23,10 @@ import sourcemapsPlugin from "../src/index";
 import { getGitCommitHashSync } from "../src/utils/git";
 
 type UploadPayload = {
+	type: "javascript";
 	buildId: string;
-	bundler: string;
 	uploadedAt: string;
-	sourcemaps: Array<{ fileName: string; sourcemap: string }>;
+	files: Array<{ fileName: string; content: string }>;
 };
 
 const fixturesDir = resolve(
@@ -112,7 +112,7 @@ describe("sourcemaps bundler plugin", () => {
 	beforeEach(async () => {
 		uploads = [];
 		server = createServer(async (request, response) => {
-			if (request.method !== "POST" || request.url !== "/api/sourcemaps") {
+			if (request.method !== "POST" || request.url !== "/v0/upload") {
 				response.writeHead(404).end();
 				return;
 			}
@@ -139,7 +139,7 @@ describe("sourcemaps bundler plugin", () => {
 			throw new Error("Could not resolve test server address");
 		}
 
-		endpoint = `http://127.0.0.1:${address.port}/api/sourcemaps`;
+		endpoint = `http://127.0.0.1:${address.port}/v0/upload`;
 	});
 
 	afterEach(async () => {
@@ -231,9 +231,9 @@ describe("sourcemaps bundler plugin", () => {
 		});
 
 		expect(uploads).toHaveLength(1);
-		expect(uploads[0]?.bundler).toBe("vite");
+		expect(uploads[0]?.type).toBe("javascript");
 		expect(uploads[0]?.buildId).toBe(buildId);
-		expect(uploads[0]?.sourcemaps.length).toBeGreaterThan(0);
+		expect(uploads[0]?.files.length).toBeGreaterThan(0);
 		const jsBundle = await findFirst(outDir, ".js");
 		expect(jsBundle).toBeTruthy();
 		const content = await readFile(jsBundle!, "utf8");
@@ -338,14 +338,14 @@ describe("sourcemaps bundler plugin", () => {
 			postedPayloads.every((payload) => payload.buildId === "batch-build-id"),
 		).toBe(true);
 		expect(
-			postedPayloads.every((payload) => payload.bundler === "rollup"),
+			postedPayloads.every((payload) => payload.type === "javascript"),
 		).toBe(true);
-		expect(
-			postedPayloads.every((payload) => payload.sourcemaps.length > 0),
-		).toBe(true);
+		expect(postedPayloads.every((payload) => payload.files.length > 0)).toBe(
+			true,
+		);
 		expect(
 			postedPayloads.flatMap((payload) =>
-				payload.sourcemaps.map((sourcemap) => sourcemap.fileName),
+				payload.files.map((file) => file.fileName),
 			),
 		).toEqual(["first.js.map", "second.js.map", "third.js.map"]);
 	});
@@ -494,9 +494,9 @@ describe("sourcemaps bundler plugin", () => {
 		await bundle.close();
 
 		expect(uploads).toHaveLength(1);
-		expect(uploads[0]?.bundler).toBe("rollup");
+		expect(uploads[0]?.type).toBe("javascript");
 		expect(uploads[0]?.buildId).toBe(buildId);
-		expect(uploads[0]?.sourcemaps.length).toBeGreaterThan(0);
+		expect(uploads[0]?.files.length).toBeGreaterThan(0);
 		const jsBundle = await findFirst(outDir, ".js");
 		expect(jsBundle).toBeTruthy();
 		const content = await readFile(jsBundle!, "utf8");
@@ -564,9 +564,9 @@ describe("sourcemaps bundler plugin", () => {
 		});
 
 		expect(uploads).toHaveLength(1);
-		expect(uploads[0]?.bundler).toBe("webpack");
+		expect(uploads[0]?.type).toBe("javascript");
 		expect(uploads[0]?.buildId).toBe(buildId);
-		expect(uploads[0]?.sourcemaps.length).toBeGreaterThan(0);
+		expect(uploads[0]?.files.length).toBeGreaterThan(0);
 		const jsBundle = join(outDir, "bundle.js");
 		const content = await readFile(jsBundle, "utf8");
 		expect(content.includes(`buildId:"${buildId}"`)).toBe(true);
@@ -603,9 +603,9 @@ describe("sourcemaps bundler plugin", () => {
 		});
 
 		expect(uploads).toHaveLength(1);
-		expect(uploads[0]?.bundler).toBe("rspack");
+		expect(uploads[0]?.type).toBe("javascript");
 		expect(uploads[0]?.buildId).toBe(buildId);
-		expect(uploads[0]?.sourcemaps.length).toBeGreaterThan(0);
+		expect(uploads[0]?.files.length).toBeGreaterThan(0);
 		const jsBundle = join(outDir, "bundle.js");
 		const content = await readFile(jsBundle, "utf8");
 		expect(content.includes(`buildId:"${buildId}"`)).toBe(true);
@@ -636,9 +636,9 @@ describe("sourcemaps bundler plugin", () => {
 		});
 
 		expect(uploads).toHaveLength(1);
-		expect(uploads[0]?.bundler).toBe("esbuild");
+		expect(uploads[0]?.type).toBe("javascript");
 		expect(uploads[0]?.buildId).toBe(buildId);
-		expect(uploads[0]?.sourcemaps.length).toBeGreaterThan(0);
+		expect(uploads[0]?.files.length).toBeGreaterThan(0);
 		const jsBundle = join(outDir, "bundle.js");
 		const content = await readFile(jsBundle, "utf8");
 		expect(content.includes(`buildId:"${buildId}"`)).toBe(true);

@@ -9,7 +9,7 @@ import type {
 import { createUnplugin } from "unplugin";
 import { getGitCommitHashSync } from "./utils/git";
 
-const DEFAULT_ENDPOINT = "https://sourcemaps.faststats.dev/api/sourcemaps";
+const DEFAULT_ENDPOINT = "https://sourcemaps.faststats.dev/v0/upload";
 const DEFAULT_MAX_UPLOAD_BODY_BYTES = 50 * 1024 * 1024;
 
 type BundlerName =
@@ -22,8 +22,6 @@ type BundlerName =
 	| "farm"
 	| "bun"
 	| "unloader";
-
-type RollupLikeBundler = "vite" | "rollup" | "rolldown" | "unloader";
 
 type WebpackLikeCompilation = {
 	hooks: {
@@ -69,17 +67,16 @@ type NativeBuildContextLike = {
 	getNativeBuildContext?: () => unknown;
 };
 
-export type SourcemapUpload = {
+export type UploadFile = {
 	fileName: string;
-	sourcemap: string;
+	content: string;
 };
 
-export type SourcemapUploadPayload = {
-	mappingType: "javascript";
+export type UploadPayload = {
+	type: "javascript";
 	buildId: string;
-	bundler: BundlerName;
 	uploadedAt: string;
-	sourcemaps: SourcemapUpload[];
+	files: UploadFile[];
 };
 
 export type BundlerPluginOptions = {
@@ -92,7 +89,7 @@ export type BundlerPluginOptions = {
 	deleteAfterUpload?: boolean;
 	globalKey?: string;
 	fetchImpl?: typeof fetch;
-	onUploadSuccess?: (payload: SourcemapUploadPayload) => void | Promise<void>;
+	onUploadSuccess?: (payload: UploadPayload) => void | Promise<void>;
 	onUploadError?: (error: unknown) => void | Promise<void>;
 };
 
@@ -109,12 +106,12 @@ const createGlobalInjection = (globalKey: string, buildId: string): string =>
 
 const collectUploadCandidates = (
 	entries: Array<[string, unknown]>,
-): SourcemapUpload[] =>
+): UploadFile[] =>
 	entries
 		.filter(([fileName]) => fileName.endsWith(".map"))
 		.flatMap(([fileName, source]) => {
 			if (typeof source === "string") {
-				return [{ fileName, sourcemap: source }];
+				return [{ fileName, content: source }];
 			}
 
 			if (
@@ -123,7 +120,7 @@ const collectUploadCandidates = (
 				"toString" in source &&
 				typeof source.toString === "function"
 			) {
-				return [{ fileName, sourcemap: source.toString() }];
+				return [{ fileName, content: source.toString() }];
 			}
 
 			return [];
@@ -149,7 +146,7 @@ const createBanner = (
 
 const postSourcemaps = async (
 	options: BundlerPluginOptions,
-	payload: SourcemapUploadPayload,
+	payload: UploadPayload,
 ): Promise<void> => {
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const response = await fetchImpl(options.endpoint ?? DEFAULT_ENDPOINT, {
@@ -168,32 +165,30 @@ const postSourcemaps = async (
 	}
 };
 
-const payloadSizeBytes = (payload: SourcemapUploadPayload): number =>
+const payloadSizeBytes = (payload: UploadPayload): number =>
 	Buffer.byteLength(JSON.stringify(payload), "utf8");
 
 const createUploadBatches = (
 	buildId: string,
-	bundler: BundlerName,
-	sourcemaps: SourcemapUpload[],
+	files: UploadFile[],
 	maxUploadBodyBytes: number,
-): SourcemapUploadPayload[] => {
+): UploadPayload[] => {
 	if (!Number.isFinite(maxUploadBodyBytes) || maxUploadBodyBytes <= 0) {
 		throw new Error("maxUploadBodyBytes must be a positive number");
 	}
 
 	const uploadedAt = new Date().toISOString();
-	const batches: SourcemapUploadPayload[] = [];
-	let currentBatch: SourcemapUpload[] = [];
+	const batches: UploadPayload[] = [];
+	let currentBatch: UploadFile[] = [];
 
-	const toPayload = (batch: SourcemapUpload[]): SourcemapUploadPayload => ({
-		mappingType: "javascript",
+	const toPayload = (batch: UploadFile[]): UploadPayload => ({
+		type: "javascript",
 		buildId,
-		bundler,
 		uploadedAt,
-		sourcemaps: batch,
+		files: batch,
 	});
 
-	const assertWithinLimit = (batch: SourcemapUpload[], fileName: string) => {
+	const assertWithinLimit = (batch: UploadFile[], fileName: string) => {
 		if (payloadSizeBytes(toPayload(batch)) > maxUploadBodyBytes) {
 			throw new Error(
 				`Sourcemap "${fileName}" exceeds maxUploadBodyBytes limit`,
@@ -201,8 +196,8 @@ const createUploadBatches = (
 		}
 	};
 
-	for (const sourcemap of sourcemaps) {
-		const nextBatch = [...currentBatch, sourcemap];
+	for (const file of files) {
+		const nextBatch = [...currentBatch, file];
 
 		if (payloadSizeBytes(toPayload(nextBatch)) <= maxUploadBodyBytes) {
 			currentBatch = nextBatch;
@@ -210,12 +205,12 @@ const createUploadBatches = (
 		}
 
 		if (currentBatch.length === 0) {
-			assertWithinLimit([sourcemap], sourcemap.fileName);
+			assertWithinLimit([file], file.fileName);
 		}
 
 		batches.push(toPayload(currentBatch));
-		currentBatch = [sourcemap];
-		assertWithinLimit(currentBatch, sourcemap.fileName);
+		currentBatch = [file];
+		assertWithinLimit(currentBatch, file.fileName);
 	}
 
 	if (currentBatch.length > 0) {
@@ -265,16 +260,16 @@ const scanDirectoryRecursively = async (rootDir: string): Promise<string[]> => {
 
 const collectFromOutputDirectory = async (
 	outputDir: string,
-): Promise<SourcemapUpload[]> => {
+): Promise<UploadFile[]> => {
 	const files = await scanDirectoryRecursively(outputDir);
 	const sourcemapFiles = files.filter((filePath) => filePath.endsWith(".map"));
 	return Promise.all(
 		sourcemapFiles.map(async (filePath) => {
-			const sourcemap = await readFile(filePath, "utf8");
+			const content = await readFile(filePath, "utf8");
 			return {
 				fileName: relative(outputDir, filePath),
-				sourcemap,
-			} satisfies SourcemapUpload;
+				content,
+			} satisfies UploadFile;
 		}),
 	);
 };
@@ -317,19 +312,17 @@ const resolveNativeOutputDir = (nativeContext: unknown): string | undefined => {
 
 const uploadAndMaybeDelete = async (
 	options: BundlerPluginOptions,
-	bundler: BundlerName,
 	buildId: string,
-	sourcemaps: SourcemapUpload[],
+	files: UploadFile[],
 	baseDirForDeletion?: string,
 ): Promise<void> => {
-	if (sourcemaps.length === 0) {
+	if (files.length === 0) {
 		return;
 	}
 
 	const batches = createUploadBatches(
 		buildId,
-		bundler,
-		sourcemaps,
+		files,
 		options.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
 	);
 	for (const payload of batches) {
@@ -340,7 +333,7 @@ const uploadAndMaybeDelete = async (
 	if (options.deleteAfterUpload && baseDirForDeletion) {
 		await deleteFiles(
 			baseDirForDeletion,
-			sourcemaps.map((item) => item.fileName),
+			files.map((item) => item.fileName),
 		);
 	}
 };
@@ -348,7 +341,7 @@ const uploadAndMaybeDelete = async (
 const isOutputAsset = (entry: OutputBundle[string]): entry is OutputAsset =>
 	entry.type === "asset";
 
-const collectFromBundle = (bundle: OutputBundle): SourcemapUpload[] =>
+const collectFromBundle = (bundle: OutputBundle): UploadFile[] =>
 	collectUploadCandidates(
 		Object.entries(bundle).map(([fileName, entry]) => [
 			fileName,
@@ -356,11 +349,7 @@ const collectFromBundle = (bundle: OutputBundle): SourcemapUpload[] =>
 		]),
 	);
 
-const rollupWriteBundle = (
-	options: BundlerPluginOptions,
-	bundler: RollupLikeBundler,
-	buildId: string,
-) =>
+const rollupWriteBundle = (options: BundlerPluginOptions, buildId: string) =>
 	async function (
 		this: unknown,
 		outputOptions: NormalizedOutputOptions,
@@ -373,13 +362,7 @@ const rollupWriteBundle = (
 			const outputDir =
 				outputOptions.dir ??
 				(outputOptions.file ? dirname(outputOptions.file) : process.cwd());
-			await uploadAndMaybeDelete(
-				options,
-				bundler,
-				buildId,
-				sourcemaps,
-				outputDir,
-			);
+			await uploadAndMaybeDelete(options, buildId, sourcemaps, outputDir);
 		} catch (error) {
 			await handleUploadError(options, error);
 		}
@@ -395,7 +378,7 @@ const rollupOutputOptions = (injection: string) =>
 
 const collectFromWebpackAssets = (
 	assets: Record<string, { source: () => unknown }>,
-): SourcemapUpload[] =>
+): UploadFile[] =>
 	collectUploadCandidates(
 		Object.entries(assets)
 			.filter(([assetName]) => assetName.endsWith(".map"))
@@ -405,7 +388,6 @@ const collectFromWebpackAssets = (
 const applyWebpackLikeHooks = (
 	compiler: WebpackLikeCompiler,
 	options: BundlerPluginOptions,
-	bundler: "webpack" | "rspack",
 	globalKey: string,
 	buildId: string,
 ): void => {
@@ -433,13 +415,7 @@ const applyWebpackLikeHooks = (
 					if (!outputPath) {
 						return;
 					}
-					await uploadAndMaybeDelete(
-						options,
-						bundler,
-						buildId,
-						sourcemaps,
-						outputPath,
-					);
+					await uploadAndMaybeDelete(options, buildId, sourcemaps, outputPath);
 
 					if (options.deleteAfterUpload && compilation.deleteAsset) {
 						for (const item of sourcemaps) {
@@ -476,25 +452,24 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 			enforce: "post",
 			rollup: {
 				outputOptions: rollupOutputOptions(injection),
-				writeBundle: rollupWriteBundle(options, "rollup", buildId),
+				writeBundle: rollupWriteBundle(options, buildId),
 			},
 			vite: {
 				outputOptions: rollupOutputOptions(injection),
-				writeBundle: rollupWriteBundle(options, "vite", buildId),
+				writeBundle: rollupWriteBundle(options, buildId),
 			},
 			rolldown: {
 				outputOptions: rollupOutputOptions(injection) as never,
-				writeBundle: rollupWriteBundle(options, "rolldown", buildId) as never,
+				writeBundle: rollupWriteBundle(options, buildId) as never,
 			},
 			unloader: {
 				outputOptions: rollupOutputOptions(injection),
-				writeBundle: rollupWriteBundle(options, "unloader", buildId),
+				writeBundle: rollupWriteBundle(options, buildId),
 			},
 			webpack(compiler) {
 				applyWebpackLikeHooks(
 					compiler as unknown as WebpackLikeCompiler,
 					options,
-					"webpack",
 					globalKey,
 					buildId,
 				);
@@ -503,7 +478,6 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 				applyWebpackLikeHooks(
 					compiler as unknown as WebpackLikeCompiler,
 					options,
-					"rspack",
 					globalKey,
 					buildId,
 				);
@@ -527,8 +501,8 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 							).filter((name) => name.endsWith(".map"));
 							const sourcemaps = await Promise.all(
 								outputEntries.map(async (fileName) => {
-									const sourcemap = await readFile(fileName, "utf8");
-									return { fileName, sourcemap } satisfies SourcemapUpload;
+									const content = await readFile(fileName, "utf8");
+									return { fileName, content } satisfies UploadFile;
 								}),
 							);
 
@@ -537,13 +511,7 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 								(build.initialOptions.outfile
 									? dirname(build.initialOptions.outfile)
 									: process.cwd());
-							await uploadAndMaybeDelete(
-								options,
-								"esbuild",
-								buildId,
-								sourcemaps,
-								outdir,
-							);
+							await uploadAndMaybeDelete(options, buildId, sourcemaps, outdir);
 						} catch (error) {
 							await handleUploadError(options, error);
 						}
@@ -567,13 +535,7 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 						return;
 					}
 
-					await uploadAndMaybeDelete(
-						options,
-						meta.framework,
-						buildId,
-						sourcemaps,
-						outputDir,
-					);
+					await uploadAndMaybeDelete(options, buildId, sourcemaps, outputDir);
 				} catch (error) {
 					await handleUploadError(options, error);
 				}
