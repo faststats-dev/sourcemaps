@@ -8,7 +8,8 @@ A monorepo for sourcemap upload infrastructure.
 ## Structure
 
 - **`apps/backend`** — Rust (Axum) API server that ingests sourcemap uploads
-- **`packages/bundler-plugin`** — Universal unplugin adapter set (Vite, Rollup, Rolldown, Webpack, Rspack, esbuild, Unloader, Farm, Bun) that uploads sourcemaps after builds
+- **`packages/bundler-plugin`** — Universal unplugin adapter set (Vite, Rolldown, Webpack and more) that uploads sourcemaps after builds
+- **`packages/proguard-plugin`** — a Gradle plugin for uploading ProGuard obfuscation mappings
 
 ## Development
 
