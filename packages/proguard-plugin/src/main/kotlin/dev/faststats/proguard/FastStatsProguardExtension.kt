@@ -11,7 +11,7 @@ abstract class FastStatsProguardExtension @Inject constructor(objects: ObjectFac
     val authToken: Property<String> = objects.property(String::class.java)
 
     val endpoint: Property<String> = objects.property(String::class.java)
-        .convention("https://sourcemaps.faststats.dev/api/sourcemaps")
+        .convention("https://sourcemaps.faststats.dev/v0/upload")
 
     val buildId: Property<String> = objects.property(String::class.java)
 
