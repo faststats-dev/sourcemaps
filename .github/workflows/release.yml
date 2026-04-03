@@ -34,6 +34,12 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
       - name: Install Dependencies
         run: bun install --frozen-lockfile
 
@@ -50,3 +56,5 @@ jobs:
           title: "chore: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY_TOKEN: ${{ secrets.REPOSITORY_TOKEN }}
+          REPOSITORY_USER: ${{ secrets.REPOSITORY_USER }}
