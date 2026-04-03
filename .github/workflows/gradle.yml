@@ -1,0 +1,25 @@
+name: Gradle Build
+on:
+  pull_request:
+    paths: [ "packages/proguard-plugin/**" ]
+  push:
+    paths: [ "packages/proguard-plugin/**" ]
+    branches: [ main ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: 17
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      - name: Build and Test with Gradle
+        working-directory: packages/proguard-plugin
+        run: ./gradlew build test

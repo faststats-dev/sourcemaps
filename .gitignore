@@ -1,6 +1,11 @@
 # Dependencies
 node_modules
 
+# JetBrains IDEs
+
+.idea/
+*.iml
+
 # Local env files
 .env
 .env.local

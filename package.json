@@ -3,15 +3,17 @@
 	"private": true,
 	"scripts": {
 		"build": "turbo run build",
-		"build:packages": "turbo run build --filter=@faststats/sourcemap-uploader-plugin",
+		"build:packages": "turbo run build --filter=@faststats/sourcemap-uploader-plugin && bun run build:proguard-plugin",
+		"build:proguard-plugin": "bun run --cwd packages/proguard-plugin build",
+		"sync-proguard-version": "bun scripts/sync-proguard-version.ts",
 		"dev": "turbo run dev",
 		"lint": "turbo run lint",
 		"test": "turbo run test",
 		"format": "prettier --write \"**/*.{ts,tsx,md}\"",
 		"check-types": "turbo run check-types",
 		"ci": "turbo run lint check-types test build",
-		"ci:version": "changeset version && bun update",
-		"ci:publish": "changeset publish"
+		"ci:version": "changeset version && bun update && bun run sync-proguard-version",
+		"ci:publish": "changeset publish && bun scripts/publish-proguard-plugin.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.10",
