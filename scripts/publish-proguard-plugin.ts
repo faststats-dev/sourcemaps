@@ -18,12 +18,16 @@ if (!process.env.REPOSITORY_TOKEN) {
 const pluginDir = join(scriptDir, "..", "packages", "proguard-plugin");
 const gradlew = join(pluginDir, "gradlew");
 
-const result = spawnSync(gradlew, ["publish"], {
-	cwd: pluginDir,
-	stdio: "inherit",
-	env: process.env,
-	shell: false,
-});
+const result = spawnSync(
+	gradlew,
+	["publishPluginMavenPublicationToMavenRepository"],
+	{
+		cwd: pluginDir,
+		stdio: "inherit",
+		env: process.env,
+		shell: false,
+	},
+);
 
 if (result.status !== 0) {
 	process.exit(result.status ?? 1);
