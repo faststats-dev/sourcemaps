@@ -6,6 +6,10 @@ const envVariables = [
 	"CI_COMMIT_SHA", // GitLab
 	"BITBUCKET_COMMIT",
 
+	// CI Providers
+	"BUILDKITE_COMMIT",
+	"CIRCLE_SHA1",
+
 	// Cloud Providers
 	"VERCEL_GIT_COMMIT_SHA",
 	"COMMIT_REF", // Netlify
