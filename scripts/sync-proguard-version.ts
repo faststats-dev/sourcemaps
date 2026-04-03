@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = join(import.meta.dir, "..");
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pkgPath = join(root, "packages/proguard-plugin/package.json");
 const gradlePropsPath = join(
 	root,

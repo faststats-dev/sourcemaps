@@ -10,12 +10,13 @@
 		"lint": "turbo run lint",
 		"test": "turbo run test",
 		"format": "prettier --write \"**/*.{ts,tsx,md}\"",
-		"check-types": "turbo run check-types",
+		"check-types": "tsc --noEmit -p scripts/tsconfig.json && turbo run check-types",
 		"ci": "turbo run lint check-types test build",
 		"ci:version": "changeset version && bun update && bun run sync-proguard-version",
 		"ci:publish": "changeset publish && bun scripts/publish-proguard-plugin.ts"
 	},
 	"devDependencies": {
+		"@types/node": "^22.15.3",
 		"@biomejs/biome": "2.4.10",
 		"turbo": "^2.9.3",
 		"typescript": "6.0.2",
