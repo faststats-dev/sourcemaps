@@ -32,7 +32,7 @@ import sourcemapsPlugin from "@sourcemaps/bundler-plugin/vite";
 export default {
   plugins: [
     sourcemapsPlugin({
-      endpoint: "http://localhost:3000/api/sourcemaps",
+      endpoint: "http://localhost:3000/v0/upload",
       deleteAfterUpload: true,
     }),
   ],
@@ -50,6 +50,24 @@ export default {
 - `fetchImpl`: custom fetch implementation
 - `onUploadSuccess`: callback after successful upload
 - `onUploadError`: callback when upload fails
+
+## Upload payload
+
+The plugin sends `POST /v0/upload` with this JSON body:
+
+```json
+{
+  "type": "javascript",
+  "buildId": "build-123",
+  "uploadedAt": "2026-04-01T12:00:00.000Z",
+  "files": [
+    {
+      "fileName": "assets/app.js.map",
+      "content": "{...}"
+    }
+  ]
+}
+```
 
 ## Tests
 
