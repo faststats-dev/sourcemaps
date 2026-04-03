@@ -55,6 +55,9 @@ const PLUGIN_OPTION_KEYS: ReadonlySet<string> = new Set([
 	"fetchImpl",
 	"onUploadSuccess",
 	"onUploadError",
+	"sourcemapScanSkipDirectoryNames",
+	"sourcemapScanRoots",
+	"debug",
 	"useWebpackPlugin",
 	"useRunAfterProductionCompile",
 ]);
@@ -78,10 +81,13 @@ function resolvePluginEnabled(
 }
 
 function isLikelyTurbopackBuild(): boolean {
-	if (process.env.TURBOPACK === "1") {
+	const turbo = process.env.TURBOPACK;
+	if (turbo === "1" || turbo === "auto") {
 		return true;
 	}
-	return process.argv.some((arg) => arg.includes("turbopack"));
+	return process.argv.some(
+		(arg) => arg.includes("turbopack") || arg.includes("--turbo"),
+	);
 }
 
 function resolveUseWebpackPlugin(
@@ -168,10 +174,17 @@ function applyWithFaststatsSourcemaps<T>(
 				if (!useHook || process.env.NODE_ENV !== "production") {
 					return;
 				}
-				await uploadSourcemapsFromDirectory(
-					resolveDistDir(params),
-					bundlerOptions,
-				);
+				await uploadSourcemapsFromDirectory(resolveDistDir(params), {
+					...bundlerOptions,
+					sourcemapScanSkipDirectoryNames:
+						bundlerOptions.sourcemapScanSkipDirectoryNames !== undefined
+							? bundlerOptions.sourcemapScanSkipDirectoryNames
+							: ["cache"],
+					sourcemapScanRoots:
+						bundlerOptions.sourcemapScanRoots !== undefined
+							? bundlerOptions.sourcemapScanRoots
+							: ["static", "server"],
+				});
 			},
 		},
 	} as T;

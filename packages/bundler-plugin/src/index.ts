@@ -1,4 +1,5 @@
-import { readdir, readFile, rm } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { readdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type {
 	NormalizedOutputOptions,
@@ -91,9 +92,43 @@ export type BundlerPluginOptions = {
 	fetchImpl?: typeof fetch;
 	onUploadSuccess?: (payload: UploadPayload) => void | Promise<void>;
 	onUploadError?: (error: unknown) => void | Promise<void>;
+	sourcemapScanSkipDirectoryNames?: string[];
+	sourcemapScanRoots?: string[];
+	debug?: boolean;
 };
 
+const MAP_SCAN_ENTRY_CONCURRENCY = 64;
+const MAP_READ_CONCURRENCY = 48;
+const BATCH_SIZE_ESTIMATE_MARGIN_CAP = 2048;
+
 const pluginName = "sourcemaps-bundler-plugin";
+
+const DEBUG_ENV_KEY = "FASTSTATS_SOURCEMAPS_DEBUG";
+
+const isSourcemapsDebug = (options: BundlerPluginOptions): boolean =>
+	options.debug === true || process.env[DEBUG_ENV_KEY] === "1";
+
+const debugLog = (
+	options: BundlerPluginOptions,
+	message: string,
+	details?: Record<string, unknown>,
+): void => {
+	if (!isSourcemapsDebug(options)) {
+		return;
+	}
+	const suffix =
+		details && Object.keys(details).length > 0
+			? ` ${JSON.stringify(details)}`
+			: "";
+	console.error(`[faststats:sourcemaps] ${message}${suffix}`);
+};
+
+type ScanProgress = {
+	dirsEntered: number;
+	revisitSkipped: number;
+	filesSeen: number;
+	skippedByName: number;
+};
 
 const resolveEnabled = (
 	enabled: BundlerPluginOptions["enabled"],
@@ -148,7 +183,14 @@ const postSourcemaps = async (
 	options: BundlerPluginOptions,
 	payload: UploadPayload,
 ): Promise<void> => {
+	const body = JSON.stringify(payload);
+	debugLog(options, "upload POST start", {
+		filesInBatch: payload.files.length,
+		bodyBytes: Buffer.byteLength(body, "utf8"),
+		endpoint: options.endpoint ?? DEFAULT_ENDPOINT,
+	});
 	const fetchImpl = options.fetchImpl ?? fetch;
+	const t0 = Date.now();
 	const response = await fetchImpl(options.endpoint ?? DEFAULT_ENDPOINT, {
 		method: "POST",
 		headers: {
@@ -157,16 +199,18 @@ const postSourcemaps = async (
 				? { authorization: `Bearer ${options.authToken}` }
 				: {}),
 		},
-		body: JSON.stringify(payload),
+		body,
+	});
+	debugLog(options, "upload POST response", {
+		ms: Date.now() - t0,
+		status: response.status,
+		ok: response.ok,
 	});
 
 	if (!response.ok) {
 		throw new Error(`Sourcemap upload failed with status ${response.status}`);
 	}
 };
-
-const payloadSizeBytes = (payload: UploadPayload): number =>
-	Buffer.byteLength(JSON.stringify(payload), "utf8");
 
 const createUploadBatches = (
 	buildId: string,
@@ -177,44 +221,77 @@ const createUploadBatches = (
 		throw new Error("maxUploadBodyBytes must be a positive number");
 	}
 
+	const batchMargin = Math.min(
+		BATCH_SIZE_ESTIMATE_MARGIN_CAP,
+		Math.max(0, Math.floor(maxUploadBodyBytes * 0.05)),
+	);
+	const budget = Math.max(1, maxUploadBodyBytes - batchMargin);
 	const uploadedAt = new Date().toISOString();
-	const batches: UploadPayload[] = [];
-	let currentBatch: UploadFile[] = [];
+	const filePieceBytes = files.map((f) =>
+		Buffer.byteLength(
+			JSON.stringify({ fileName: f.fileName, content: f.content }),
+			"utf8",
+		),
+	);
 
-	const toPayload = (batch: UploadFile[]): UploadPayload => ({
-		type: "javascript",
+	const probe = JSON.stringify({
+		type: "javascript" as const,
 		buildId,
 		uploadedAt,
-		files: batch,
+		files: [],
 	});
-
-	const assertWithinLimit = (batch: UploadFile[], fileName: string) => {
-		if (payloadSizeBytes(toPayload(batch)) > maxUploadBodyBytes) {
-			throw new Error(
-				`Sourcemap "${fileName}" exceeds maxUploadBodyBytes limit`,
-			);
-		}
-	};
-
-	for (const file of files) {
-		const nextBatch = [...currentBatch, file];
-
-		if (payloadSizeBytes(toPayload(nextBatch)) <= maxUploadBodyBytes) {
-			currentBatch = nextBatch;
-			continue;
-		}
-
-		if (currentBatch.length === 0) {
-			assertWithinLimit([file], file.fileName);
-		}
-
-		batches.push(toPayload(currentBatch));
-		currentBatch = [file];
-		assertWithinLimit(currentBatch, file.fileName);
+	const filesMarker = '"files":[';
+	const mi = probe.indexOf(filesMarker);
+	if (mi === -1) {
+		throw new Error("createUploadBatches: could not parse empty payload shape");
 	}
+	const head = probe.slice(0, mi + filesMarker.length);
+	const tail = probe.slice(mi + filesMarker.length);
+	const headTailBytes = Buffer.byteLength(head + tail, "utf8");
 
-	if (currentBatch.length > 0) {
-		batches.push(toPayload(currentBatch));
+	const batches: UploadPayload[] = [];
+	let idx = 0;
+	while (idx < files.length) {
+		const batchFiles: UploadFile[] = [];
+		let batchBytes = headTailBytes;
+
+		while (idx < files.length) {
+			const file = files[idx] as UploadFile;
+			const pBytes = filePieceBytes[idx] as number;
+			const extra = batchFiles.length > 0 ? 1 : 0;
+			if (batchBytes + extra + pBytes <= budget) {
+				batchFiles.push(file);
+				batchBytes += extra + pBytes;
+				idx++;
+				continue;
+			}
+			if (batchFiles.length > 0) {
+				break;
+			}
+			const solo: UploadPayload = {
+				type: "javascript",
+				buildId,
+				uploadedAt,
+				files: [file],
+			};
+			const soloBytes = Buffer.byteLength(JSON.stringify(solo), "utf8");
+			if (soloBytes > maxUploadBodyBytes) {
+				throw new Error(
+					`Sourcemap "${file.fileName}" exceeds maxUploadBodyBytes limit`,
+				);
+			}
+			batches.push(solo);
+			idx++;
+		}
+
+		if (batchFiles.length > 0) {
+			batches.push({
+				type: "javascript",
+				buildId,
+				uploadedAt,
+				files: batchFiles,
+			});
+		}
 	}
 
 	return batches;
@@ -243,35 +320,190 @@ const deleteFiles = async (
 	);
 };
 
-const scanDirectoryRecursively = async (rootDir: string): Promise<string[]> => {
-	const entries = await readdir(rootDir, { withFileTypes: true });
-	const nested = await Promise.all(
-		entries.map(async (entry) => {
-			const fullPath = join(rootDir, entry.name);
-			if (entry.isDirectory()) {
-				return scanDirectoryRecursively(fullPath);
-			}
-			return [fullPath];
-		}),
-	);
+const scanDirectoryForMapPaths = async (
+	dirPath: string,
+	visitedRealDirs: Set<string>,
+	skipDirectoryNames: ReadonlySet<string>,
+	options: BundlerPluginOptions,
+	progress: ScanProgress,
+): Promise<string[]> => {
+	let canonical: string;
+	try {
+		canonical = await realpath(dirPath);
+	} catch {
+		return [];
+	}
+	if (visitedRealDirs.has(canonical)) {
+		progress.revisitSkipped++;
+		if (
+			isSourcemapsDebug(options) &&
+			(progress.revisitSkipped <= 8 || progress.revisitSkipped % 500 === 0)
+		) {
+			debugLog(options, "scan skip revisiting path", {
+				revisitSkipped: progress.revisitSkipped,
+				canonical,
+			});
+		}
+		return [];
+	}
+	visitedRealDirs.add(canonical);
+	progress.dirsEntered++;
+	if (
+		isSourcemapsDebug(options) &&
+		(progress.dirsEntered <= 16 || progress.dirsEntered % 250 === 0)
+	) {
+		debugLog(options, "scan entered directory", {
+			dirsEntered: progress.dirsEntered,
+			filesSeen: progress.filesSeen,
+			canonical,
+		});
+	}
 
-	return nested.flat();
+	let dirents: import("node:fs").Dirent[];
+	try {
+		dirents = await readdir(dirPath, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+
+	const mapPaths: string[] = [];
+	for (let c = 0; c < dirents.length; c += MAP_SCAN_ENTRY_CONCURRENCY) {
+		const chunk = dirents.slice(c, c + MAP_SCAN_ENTRY_CONCURRENCY);
+		const nested = await Promise.all(
+			chunk.map(async (entry) => {
+				const name = entry.name;
+				if (skipDirectoryNames.has(name)) {
+					progress.skippedByName++;
+					if (
+						isSourcemapsDebug(options) &&
+						(progress.skippedByName <= 12 ||
+							progress.skippedByName % 500 === 0)
+					) {
+						debugLog(options, "scan skip directory by name", {
+							skippedByName: progress.skippedByName,
+							name,
+							parent: dirPath,
+						});
+					}
+					return [] as string[];
+				}
+				const fullPath = join(dirPath, name);
+				if (entry.isDirectory()) {
+					return scanDirectoryForMapPaths(
+						fullPath,
+						visitedRealDirs,
+						skipDirectoryNames,
+						options,
+						progress,
+					);
+				}
+				if (entry.isFile() && name.endsWith(".map")) {
+					progress.filesSeen++;
+					if (
+						isSourcemapsDebug(options) &&
+						(progress.filesSeen <= 20 || progress.filesSeen % 2000 === 0)
+					) {
+						debugLog(options, "scan map file", {
+							filesSeen: progress.filesSeen,
+							path: fullPath,
+						});
+					}
+					return [fullPath];
+				}
+				if (!entry.isFile() && !entry.isDirectory()) {
+					let st: Stats;
+					try {
+						st = await stat(fullPath);
+					} catch {
+						return [];
+					}
+					if (st.isDirectory()) {
+						return scanDirectoryForMapPaths(
+							fullPath,
+							visitedRealDirs,
+							skipDirectoryNames,
+							options,
+							progress,
+						);
+					}
+					if (st.isFile() && name.endsWith(".map")) {
+						progress.filesSeen++;
+						return [fullPath];
+					}
+				}
+				return [];
+			}),
+		);
+		for (const part of nested) {
+			mapPaths.push(...part);
+		}
+	}
+	return mapPaths;
 };
 
 const collectFromOutputDirectory = async (
 	outputDir: string,
+	options: BundlerPluginOptions,
 ): Promise<UploadFile[]> => {
-	const files = await scanDirectoryRecursively(outputDir);
-	const sourcemapFiles = files.filter((filePath) => filePath.endsWith(".map"));
-	return Promise.all(
-		sourcemapFiles.map(async (filePath) => {
-			const content = await readFile(filePath, "utf8");
-			return {
-				fileName: relative(outputDir, filePath),
-				content,
-			} satisfies UploadFile;
-		}),
+	const skipDirectoryNames = new Set(
+		options.sourcemapScanSkipDirectoryNames ?? [],
 	);
+	const roots =
+		options.sourcemapScanRoots && options.sourcemapScanRoots.length > 0
+			? options.sourcemapScanRoots.map((r) => join(outputDir, r))
+			: [outputDir];
+	debugLog(options, "collectFromOutputDirectory start", {
+		outputDir,
+		roots,
+		skipDirectoryNames: [...skipDirectoryNames],
+	});
+	const progress: ScanProgress = {
+		dirsEntered: 0,
+		revisitSkipped: 0,
+		filesSeen: 0,
+		skippedByName: 0,
+	};
+	const scanT0 = Date.now();
+	const visited = new Set<string>();
+	const sourcemapFiles: string[] = [];
+	for (const root of roots) {
+		const found = await scanDirectoryForMapPaths(
+			root,
+			visited,
+			skipDirectoryNames,
+			options,
+			progress,
+		);
+		sourcemapFiles.push(...found);
+	}
+	debugLog(options, "collectFromOutputDirectory scan done", {
+		ms: Date.now() - scanT0,
+		dirsEntered: progress.dirsEntered,
+		revisitSkipped: progress.revisitSkipped,
+		filesSeen: progress.filesSeen,
+		skippedByName: progress.skippedByName,
+		mapPaths: sourcemapFiles.length,
+	});
+	const readT0 = Date.now();
+	const result: UploadFile[] = [];
+	for (let i = 0; i < sourcemapFiles.length; i += MAP_READ_CONCURRENCY) {
+		const slice = sourcemapFiles.slice(i, i + MAP_READ_CONCURRENCY);
+		const part = await Promise.all(
+			slice.map(async (filePath) => {
+				const content = await readFile(filePath, "utf8");
+				return {
+					fileName: relative(outputDir, filePath),
+					content,
+				} satisfies UploadFile;
+			}),
+		);
+		result.push(...part);
+	}
+	debugLog(options, "collectFromOutputDirectory read maps done", {
+		ms: Date.now() - readT0,
+		mapFilesRead: result.length,
+	});
+	return result;
 };
 
 const getRecord = (value: unknown): Record<string, unknown> | undefined =>
@@ -320,12 +552,29 @@ const uploadAndMaybeDelete = async (
 		return;
 	}
 
+	debugLog(options, "batching uploads", {
+		mapFileCount: files.length,
+		maxUploadBodyBytes:
+			options.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
+	});
+	const batchT0 = Date.now();
 	const batches = createUploadBatches(
 		buildId,
 		files,
 		options.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
 	);
+	debugLog(options, "batching done", {
+		ms: Date.now() - batchT0,
+		batchCount: batches.length,
+	});
+	let batchIndex = 0;
 	for (const payload of batches) {
+		batchIndex++;
+		debugLog(options, "upload batch", {
+			index: batchIndex,
+			of: batches.length,
+			files: payload.files.length,
+		});
 		await postSourcemaps(options, payload);
 		await options.onUploadSuccess?.(payload);
 	}
@@ -357,6 +606,9 @@ const rollupWriteBundle = (options: BundlerPluginOptions, buildId: string) =>
 	): Promise<void> {
 		try {
 			const sourcemaps = collectFromBundle(bundle);
+			debugLog(options, "rollup writeBundle map outputs", {
+				mapCount: sourcemaps.length,
+			});
 			if (sourcemaps.length === 0) return;
 
 			const outputDir =
@@ -407,12 +659,17 @@ const applyWebpackLikeHooks = (
 			async (assets) => {
 				try {
 					const sourcemaps = collectFromWebpackAssets(assets);
+					debugLog(options, "webpack processAssets", {
+						mapAssetCount: sourcemaps.length,
+						totalAssetCount: Object.keys(assets).length,
+					});
 					if (sourcemaps.length === 0) {
 						return;
 					}
 
 					const outputPath = compiler.options.output?.path;
 					if (!outputPath) {
+						debugLog(options, "webpack processAssets missing output.path", {});
 						return;
 					}
 					await uploadAndMaybeDelete(options, buildId, sourcemaps, outputPath);
@@ -530,7 +787,10 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 						return;
 					}
 
-					const sourcemaps = await collectFromOutputDirectory(outputDir);
+					const sourcemaps = await collectFromOutputDirectory(
+						outputDir,
+						options,
+					);
 					if (sourcemaps.length === 0) {
 						return;
 					}
@@ -548,17 +808,33 @@ export async function uploadSourcemapsFromDirectory(
 	outputDir: string,
 	options: BundlerPluginOptions,
 ): Promise<void> {
+	debugLog(options, "uploadSourcemapsFromDirectory start", { outputDir });
+	const buildT0 = Date.now();
 	const buildId =
 		options.buildId ??
 		getGitCommitHashSync() ??
 		`random_${crypto.randomUUID()}`;
+	debugLog(options, "uploadSourcemapsFromDirectory buildId", {
+		buildId,
+		resolvedMs: Date.now() - buildT0,
+	});
 	try {
-		const sourcemaps = await collectFromOutputDirectory(outputDir);
+		const sourcemaps = await collectFromOutputDirectory(outputDir, options);
 		if (sourcemaps.length === 0) {
+			debugLog(options, "uploadSourcemapsFromDirectory no map files", {
+				outputDir,
+			});
 			return;
 		}
 		await uploadAndMaybeDelete(options, buildId, sourcemaps, outputDir);
+		debugLog(options, "uploadSourcemapsFromDirectory complete", {
+			outputDir,
+			mapFiles: sourcemaps.length,
+		});
 	} catch (error) {
+		debugLog(options, "uploadSourcemapsFromDirectory error", {
+			message: error instanceof Error ? error.message : String(error),
+		});
 		await handleUploadError(options, error);
 	}
 }
