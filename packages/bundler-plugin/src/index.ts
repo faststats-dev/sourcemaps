@@ -544,6 +544,25 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 	},
 );
 
+export async function uploadSourcemapsFromDirectory(
+	outputDir: string,
+	options: BundlerPluginOptions,
+): Promise<void> {
+	const buildId =
+		options.buildId ??
+		getGitCommitHashSync() ??
+		`random_${crypto.randomUUID()}`;
+	try {
+		const sourcemaps = await collectFromOutputDirectory(outputDir);
+		if (sourcemaps.length === 0) {
+			return;
+		}
+		await uploadAndMaybeDelete(options, buildId, sourcemaps, outputDir);
+	} catch (error) {
+		await handleUploadError(options, error);
+	}
+}
+
 export const sourcemapsPlugin = unpluginInstance;
 export const vite = sourcemapsPlugin.vite;
 export const rollup = sourcemapsPlugin.rollup;

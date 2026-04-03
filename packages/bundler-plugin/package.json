@@ -10,6 +10,8 @@
 		"url": "https://github.com/faststats-dev/sourcemaps"
 	},
 	"type": "module",
+	"main": "./dist/index.mjs",
+	"module": "./dist/index.mjs",
 	"files": [
 		"dist",
 		"README.md"
@@ -18,43 +20,53 @@
 	"exports": {
 		".": {
 			"types": "./dist/index.d.mts",
-			"import": "./dist/index.mjs"
+			"import": "./dist/index.mjs",
+			"default": "./dist/index.mjs"
 		},
 		"./vite": {
 			"types": "./dist/bundler/vite.d.mts",
-			"import": "./dist/bundler/vite.mjs"
+			"import": "./dist/bundler/vite.mjs",
+			"default": "./dist/bundler/vite.mjs"
 		},
 		"./rollup": {
 			"types": "./dist/bundler/rollup.d.mts",
-			"import": "./dist/bundler/rollup.mjs"
+			"import": "./dist/bundler/rollup.mjs",
+			"default": "./dist/bundler/rollup.mjs"
 		},
 		"./rolldown": {
 			"types": "./dist/bundler/rolldown.d.mts",
-			"import": "./dist/bundler/rolldown.mjs"
+			"import": "./dist/bundler/rolldown.mjs",
+			"default": "./dist/bundler/rolldown.mjs"
 		},
 		"./webpack": {
 			"types": "./dist/bundler/webpack.d.mts",
-			"import": "./dist/bundler/webpack.mjs"
+			"import": "./dist/bundler/webpack.mjs",
+			"default": "./dist/bundler/webpack.mjs"
 		},
 		"./rspack": {
 			"types": "./dist/bundler/rspack.d.mts",
-			"import": "./dist/bundler/rspack.mjs"
+			"import": "./dist/bundler/rspack.mjs",
+			"default": "./dist/bundler/rspack.mjs"
 		},
 		"./esbuild": {
 			"types": "./dist/bundler/esbuild.d.mts",
-			"import": "./dist/bundler/esbuild.mjs"
+			"import": "./dist/bundler/esbuild.mjs",
+			"default": "./dist/bundler/esbuild.mjs"
 		},
 		"./unloader": {
 			"types": "./dist/bundler/unloader.d.mts",
-			"import": "./dist/bundler/unloader.mjs"
+			"import": "./dist/bundler/unloader.mjs",
+			"default": "./dist/bundler/unloader.mjs"
 		},
 		"./farm": {
 			"types": "./dist/bundler/farm.d.mts",
-			"import": "./dist/bundler/farm.mjs"
+			"import": "./dist/bundler/farm.mjs",
+			"default": "./dist/bundler/farm.mjs"
 		},
 		"./bun": {
 			"types": "./dist/bundler/bun.d.mts",
-			"import": "./dist/bundler/bun.mjs"
+			"import": "./dist/bundler/bun.mjs",
+			"default": "./dist/bundler/bun.mjs"
 		}
 	},
 	"scripts": {

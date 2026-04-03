@@ -3,7 +3,7 @@
 	"private": true,
 	"scripts": {
 		"build": "turbo run build",
-		"build:packages": "turbo run build --filter=@faststats/sourcemap-uploader-plugin && bun run build:proguard-plugin",
+		"build:packages": "turbo run build --filter=@faststats/sourcemap-uploader-plugin --filter=@faststats/sourcemap-uploader-nextjs && bun run build:proguard-plugin",
 		"build:proguard-plugin": "bun run --cwd packages/proguard-plugin build",
 		"sync-proguard-version": "bun scripts/sync-proguard-version.ts",
 		"dev": "turbo run dev",
