@@ -19,6 +19,7 @@
       "name": "@faststats/sourcemap-uploader-plugin",
       "version": "0.4.0",
       "dependencies": {
+        "@faststats/sourcemap-uploader-core": "workspace:*",
         "unplugin": "^3.0.0",
       },
       "devDependencies": {
@@ -36,9 +37,21 @@
         "typescript": "^5.9.3 || ^6.0.0",
       },
     },
+    "packages/javascript-core": {
+      "name": "@faststats/sourcemap-uploader-core",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/node": "^25.0.0",
+        "tsdown": "^0.21.0",
+        "typescript": "6.0.2",
+      },
+    },
     "packages/nextjs-config": {
       "name": "@faststats/sourcemap-uploader-nextjs",
       "version": "0.1.0",
+      "dependencies": {
+        "@faststats/sourcemap-uploader-core": "workspace:*",
+      },
       "devDependencies": {
         "@faststats/sourcemap-uploader-plugin": "workspace:*",
         "@types/node": "^25.0.0",
@@ -183,6 +196,8 @@
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.28.0", "", { "os": "win32", "cpu": "x64" }, "sha512-pEl1bO9mfAmIC+tW5btTmrKaujg3zGtUmWNdCw/xs70FBjwAL3o9OEKNHvNmnyylD6ubxUERiEhdsL0xBQ9efw=="],
 
     "@faststats/proguard-mappings-upload-plugin": ["@faststats/proguard-mappings-upload-plugin@workspace:packages/proguard-plugin"],
+
+    "@faststats/sourcemap-uploader-core": ["@faststats/sourcemap-uploader-core@workspace:packages/javascript-core"],
 
     "@faststats/sourcemap-uploader-nextjs": ["@faststats/sourcemap-uploader-nextjs@workspace:packages/nextjs-config"],
 

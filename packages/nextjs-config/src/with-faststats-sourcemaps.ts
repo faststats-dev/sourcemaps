@@ -1,9 +1,12 @@
 import { isAbsolute, join } from "node:path";
-import type { BundlerPluginOptions } from "@faststats/sourcemap-uploader-plugin";
-import { uploadSourcemapsFromDirectory } from "@faststats/sourcemap-uploader-plugin";
+import type { JavaScriptSourcemapOptions } from "@faststats/sourcemap-uploader-core";
+import { uploadSourcemapsFromDirectory } from "@faststats/sourcemap-uploader-core";
 import createSourcemapsWebpackPlugin from "@faststats/sourcemap-uploader-plugin/webpack";
 
-export type WithFaststatsSourcemapsOptions = BundlerPluginOptions & {
+type EnabledOption = boolean | ((framework: string | undefined) => boolean);
+
+export type WithFaststatsSourcemapsOptions = JavaScriptSourcemapOptions & {
+	enabled?: EnabledOption;
 	useWebpackPlugin?: boolean | "auto";
 	useRunAfterProductionCompile?: boolean | "auto";
 };
