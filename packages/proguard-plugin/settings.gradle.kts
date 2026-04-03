@@ -1,1 +1,1 @@
-rootProject.name = "proguard-plugin"
+rootProject.name = "proguard-mappings-upload"
