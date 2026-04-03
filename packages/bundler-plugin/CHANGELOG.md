@@ -1,5 +1,11 @@
 # @faststats/sourcemap-uploader-plugin
 
+## 0.4.0
+
+### Minor Changes
+
+- e1f7588: refactor: use new api routes
+
 ## 0.3.2
 
 ### Patch Changes
