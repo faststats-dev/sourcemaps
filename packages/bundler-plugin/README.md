@@ -27,7 +27,7 @@ Unplugin-based sourcemap uploader that works across all unplugin adapters:
 ## Usage
 
 ```ts
-import sourcemapsPlugin from "@sourcemaps/bundler-plugin/vite";
+import sourcemapsPlugin from "@faststats/sourcemap-uploader-plugin/vite";
 
 export default {
   plugins: [
