@@ -28,13 +28,13 @@ pub struct UploadFile {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum IngestPayload {
-    #[serde(rename = "javascript")]
+    #[serde(rename = "javascript", rename_all = "camelCase")]
     JavaScript {
         build_id: String,
         uploaded_at: String,
         files: Vec<UploadFile>,
     },
-    #[serde(rename = "proguard")]
+    #[serde(rename = "proguard", rename_all = "camelCase")]
     Proguard {
         build_id: String,
         uploaded_at: String,
