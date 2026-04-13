@@ -13,7 +13,7 @@ repositories {
 
 dependencies {
     implementation("com.google.code.gson:gson:2.13.2")
-    compileOnly("com.android.tools.build:gradle:9.1.0")
+    compileOnly("com.android.tools.build:gradle:9.1.1")
 }
 
 java {
