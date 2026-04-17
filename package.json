@@ -21,7 +21,7 @@
 		"turbo": "^2.9.3",
 		"typescript": "6.0.2",
 		"@changesets/changelog-github": "0.6.0",
-		"@changesets/cli": "2.30.0"
+		"@changesets/cli": "2.31.0"
 	},
 	"engines": {
 		"node": ">=18"
