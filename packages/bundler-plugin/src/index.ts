@@ -1,5 +1,17 @@
-import { readdir, readFile, rm } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import {
+	collectFromOutputDirectory,
+	collectUploadCandidates,
+	createBuildMetadataInjection,
+	debugLog,
+	handleUploadError,
+	type JavaScriptSourcemapOptions,
+	resolveBuildId,
+	resolveGlobalKey,
+	type UploadFile,
+	uploadAndMaybeDelete,
+} from "@faststats/sourcemap-uploader-core";
 import type {
 	NormalizedOutputOptions,
 	OutputAsset,
@@ -7,12 +19,8 @@ import type {
 	OutputOptions,
 } from "rollup";
 import { createUnplugin } from "unplugin";
-import { getGitCommitHashSync } from "./utils/git";
 
-const DEFAULT_ENDPOINT = "https://sourcemaps.faststats.dev/v0/upload";
-const DEFAULT_MAX_UPLOAD_BODY_BYTES = 50 * 1024 * 1024;
-
-type BundlerName =
+export type BundlerName =
 	| "vite"
 	| "rollup"
 	| "rolldown"
@@ -67,30 +75,13 @@ type NativeBuildContextLike = {
 	getNativeBuildContext?: () => unknown;
 };
 
-export type UploadFile = {
-	fileName: string;
-	content: string;
-};
+export type {
+	UploadFile,
+	UploadPayload,
+} from "@faststats/sourcemap-uploader-core";
 
-export type UploadPayload = {
-	type: "javascript";
-	buildId: string;
-	uploadedAt: string;
-	files: UploadFile[];
-};
-
-export type BundlerPluginOptions = {
+export type BundlerPluginOptions = JavaScriptSourcemapOptions & {
 	enabled?: boolean | ((framework: BundlerName | undefined) => boolean);
-	endpoint?: string;
-	authToken?: string;
-	buildId?: string;
-	maxUploadBodyBytes?: number;
-	failOnError?: boolean;
-	deleteAfterUpload?: boolean;
-	globalKey?: string;
-	fetchImpl?: typeof fetch;
-	onUploadSuccess?: (payload: UploadPayload) => void | Promise<void>;
-	onUploadError?: (error: unknown) => void | Promise<void>;
 };
 
 const pluginName = "sourcemaps-bundler-plugin";
@@ -100,31 +91,6 @@ const resolveEnabled = (
 	framework: BundlerName | undefined,
 ): boolean =>
 	typeof enabled === "function" ? enabled(framework) : (enabled ?? true);
-
-const createGlobalInjection = (globalKey: string, buildId: string): string =>
-	`globalThis[${JSON.stringify(globalKey)}]={buildId:${JSON.stringify(buildId)}};`;
-
-const collectUploadCandidates = (
-	entries: Array<[string, unknown]>,
-): UploadFile[] =>
-	entries
-		.filter(([fileName]) => fileName.endsWith(".map"))
-		.flatMap(([fileName, source]) => {
-			if (typeof source === "string") {
-				return [{ fileName, content: source }];
-			}
-
-			if (
-				source &&
-				typeof source === "object" &&
-				"toString" in source &&
-				typeof source.toString === "function"
-			) {
-				return [{ fileName, content: source.toString() }];
-			}
-
-			return [];
-		});
 
 const createBanner = (
 	existingBanner: OutputOptions["banner"],
@@ -144,134 +110,104 @@ const createBanner = (
 	return injection;
 };
 
-const postSourcemaps = async (
-	options: BundlerPluginOptions,
-	payload: UploadPayload,
-): Promise<void> => {
-	const fetchImpl = options.fetchImpl ?? fetch;
-	const response = await fetchImpl(options.endpoint ?? DEFAULT_ENDPOINT, {
-		method: "POST",
-		headers: {
-			"content-type": "application/json",
-			...(options.authToken
-				? { authorization: `Bearer ${options.authToken}` }
-				: {}),
-		},
-		body: JSON.stringify(payload),
-	});
+const isOutputAsset = (entry: OutputBundle[string]): entry is OutputAsset =>
+	entry.type === "asset";
 
-	if (!response.ok) {
-		throw new Error(`Sourcemap upload failed with status ${response.status}`);
-	}
-};
+const collectFromBundle = (bundle: OutputBundle): UploadFile[] =>
+	collectUploadCandidates(
+		Object.entries(bundle).map(([fileName, entry]) => [
+			fileName,
+			isOutputAsset(entry) ? entry.source : null,
+		]),
+	);
 
-const payloadSizeBytes = (payload: UploadPayload): number =>
-	Buffer.byteLength(JSON.stringify(payload), "utf8");
+const rollupWriteBundle =
+	(options: BundlerPluginOptions, buildId: string) =>
+	async (
+		outputOptions: NormalizedOutputOptions,
+		bundle: OutputBundle,
+	): Promise<void> => {
+		try {
+			const sourcemaps = collectFromBundle(bundle);
+			debugLog(options, "rollup writeBundle map outputs", {
+				mapCount: sourcemaps.length,
+			});
+			if (sourcemaps.length === 0) {
+				return;
+			}
 
-const createUploadBatches = (
-	buildId: string,
-	files: UploadFile[],
-	maxUploadBodyBytes: number,
-): UploadPayload[] => {
-	if (!Number.isFinite(maxUploadBodyBytes) || maxUploadBodyBytes <= 0) {
-		throw new Error("maxUploadBodyBytes must be a positive number");
-	}
-
-	const uploadedAt = new Date().toISOString();
-	const batches: UploadPayload[] = [];
-	let currentBatch: UploadFile[] = [];
-
-	const toPayload = (batch: UploadFile[]): UploadPayload => ({
-		type: "javascript",
-		buildId,
-		uploadedAt,
-		files: batch,
-	});
-
-	const assertWithinLimit = (batch: UploadFile[], fileName: string) => {
-		if (payloadSizeBytes(toPayload(batch)) > maxUploadBodyBytes) {
-			throw new Error(
-				`Sourcemap "${fileName}" exceeds maxUploadBodyBytes limit`,
-			);
+			const outputDir =
+				outputOptions.dir ??
+				(outputOptions.file ? dirname(outputOptions.file) : process.cwd());
+			await uploadAndMaybeDelete(options, buildId, sourcemaps, outputDir);
+		} catch (error) {
+			await handleUploadError(options, error);
 		}
 	};
 
-	for (const file of files) {
-		const nextBatch = [...currentBatch, file];
+const rollupOutputOptions =
+	(injection: string) =>
+	(outputOptions: OutputOptions): OutputOptions => ({
+		...outputOptions,
+		banner: createBanner(outputOptions.banner, injection),
+	});
 
-		if (payloadSizeBytes(toPayload(nextBatch)) <= maxUploadBodyBytes) {
-			currentBatch = nextBatch;
-			continue;
-		}
+const collectFromWebpackAssets = (
+	assets: Record<string, { source: () => unknown }>,
+): UploadFile[] =>
+	collectUploadCandidates(
+		Object.entries(assets)
+			.filter(([assetName]) => assetName.endsWith(".map"))
+			.map(([assetName, source]) => [assetName, source.source()]),
+	);
 
-		if (currentBatch.length === 0) {
-			assertWithinLimit([file], file.fileName);
-		}
-
-		batches.push(toPayload(currentBatch));
-		currentBatch = [file];
-		assertWithinLimit(currentBatch, file.fileName);
-	}
-
-	if (currentBatch.length > 0) {
-		batches.push(toPayload(currentBatch));
-	}
-
-	return batches;
-};
-
-const handleUploadError = async (
+const applyWebpackLikeHooks = (
+	compiler: WebpackLikeCompiler,
 	options: BundlerPluginOptions,
-	error: unknown,
-): Promise<void> => {
-	await options.onUploadError?.(error);
-	if (options.failOnError ?? true) {
-		throw error;
-	}
-};
+	globalKey: string,
+	buildId: string,
+): void => {
+	new compiler.webpack.BannerPlugin({
+		banner: createBuildMetadataInjection(globalKey, buildId),
+		raw: true,
+		entryOnly: false,
+	}).apply(compiler);
 
-const deleteFiles = async (
-	baseDir: string,
-	fileNames: string[],
-): Promise<void> => {
-	await Promise.all(
-		fileNames.map((fileName) =>
-			rm(isAbsolute(fileName) ? fileName : join(baseDir, fileName), {
-				force: true,
-			}),
-		),
-	);
-};
+	compiler.hooks.thisCompilation.tap(pluginName, (compilation) => {
+		compilation.hooks.processAssets.tapPromise(
+			{
+				name: pluginName,
+				stage: compiler.webpack.Compilation.PROCESS_ASSETS_STAGE_SUMMARIZE,
+			},
+			async (assets) => {
+				try {
+					const sourcemaps = collectFromWebpackAssets(assets);
+					debugLog(options, "webpack processAssets", {
+						mapAssetCount: sourcemaps.length,
+						totalAssetCount: Object.keys(assets).length,
+					});
+					if (sourcemaps.length === 0) {
+						return;
+					}
 
-const scanDirectoryRecursively = async (rootDir: string): Promise<string[]> => {
-	const entries = await readdir(rootDir, { withFileTypes: true });
-	const nested = await Promise.all(
-		entries.map(async (entry) => {
-			const fullPath = join(rootDir, entry.name);
-			if (entry.isDirectory()) {
-				return scanDirectoryRecursively(fullPath);
-			}
-			return [fullPath];
-		}),
-	);
+					const outputPath = compiler.options.output?.path;
+					if (!outputPath) {
+						debugLog(options, "webpack processAssets missing output.path", {});
+						return;
+					}
 
-	return nested.flat();
-};
-
-const collectFromOutputDirectory = async (
-	outputDir: string,
-): Promise<UploadFile[]> => {
-	const files = await scanDirectoryRecursively(outputDir);
-	const sourcemapFiles = files.filter((filePath) => filePath.endsWith(".map"));
-	return Promise.all(
-		sourcemapFiles.map(async (filePath) => {
-			const content = await readFile(filePath, "utf8");
-			return {
-				fileName: relative(outputDir, filePath),
-				content,
-			} satisfies UploadFile;
-		}),
-	);
+					await uploadAndMaybeDelete(options, buildId, sourcemaps, outputPath);
+					if (options.deleteAfterUpload && compilation.deleteAsset) {
+						for (const sourcemap of sourcemaps) {
+							compilation.deleteAsset(sourcemap.fileName);
+						}
+					}
+				} catch (error) {
+					await handleUploadError(options, error);
+				}
+			},
+		);
+	});
 };
 
 const getRecord = (value: unknown): Record<string, unknown> | undefined =>
@@ -310,126 +246,6 @@ const resolveNativeOutputDir = (nativeContext: unknown): string | undefined => {
 	return undefined;
 };
 
-const uploadAndMaybeDelete = async (
-	options: BundlerPluginOptions,
-	buildId: string,
-	files: UploadFile[],
-	baseDirForDeletion?: string,
-): Promise<void> => {
-	if (files.length === 0) {
-		return;
-	}
-
-	const batches = createUploadBatches(
-		buildId,
-		files,
-		options.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
-	);
-	for (const payload of batches) {
-		await postSourcemaps(options, payload);
-		await options.onUploadSuccess?.(payload);
-	}
-
-	if (options.deleteAfterUpload && baseDirForDeletion) {
-		await deleteFiles(
-			baseDirForDeletion,
-			files.map((item) => item.fileName),
-		);
-	}
-};
-
-const isOutputAsset = (entry: OutputBundle[string]): entry is OutputAsset =>
-	entry.type === "asset";
-
-const collectFromBundle = (bundle: OutputBundle): UploadFile[] =>
-	collectUploadCandidates(
-		Object.entries(bundle).map(([fileName, entry]) => [
-			fileName,
-			isOutputAsset(entry) ? entry.source : null,
-		]),
-	);
-
-const rollupWriteBundle = (options: BundlerPluginOptions, buildId: string) =>
-	async function (
-		this: unknown,
-		outputOptions: NormalizedOutputOptions,
-		bundle: OutputBundle,
-	): Promise<void> {
-		try {
-			const sourcemaps = collectFromBundle(bundle);
-			if (sourcemaps.length === 0) return;
-
-			const outputDir =
-				outputOptions.dir ??
-				(outputOptions.file ? dirname(outputOptions.file) : process.cwd());
-			await uploadAndMaybeDelete(options, buildId, sourcemaps, outputDir);
-		} catch (error) {
-			await handleUploadError(options, error);
-		}
-	};
-
-const rollupOutputOptions = (injection: string) =>
-	function (this: unknown, outputOptions: OutputOptions): OutputOptions {
-		return {
-			...outputOptions,
-			banner: createBanner(outputOptions.banner, injection),
-		};
-	};
-
-const collectFromWebpackAssets = (
-	assets: Record<string, { source: () => unknown }>,
-): UploadFile[] =>
-	collectUploadCandidates(
-		Object.entries(assets)
-			.filter(([assetName]) => assetName.endsWith(".map"))
-			.map(([assetName, source]) => [assetName, source.source()]),
-	);
-
-const applyWebpackLikeHooks = (
-	compiler: WebpackLikeCompiler,
-	options: BundlerPluginOptions,
-	globalKey: string,
-	buildId: string,
-): void => {
-	const BannerPlugin = compiler.webpack.BannerPlugin;
-	new BannerPlugin({
-		banner: createGlobalInjection(globalKey, buildId),
-		raw: true,
-		entryOnly: false,
-	}).apply(compiler);
-
-	compiler.hooks.thisCompilation.tap(pluginName, (compilation) => {
-		compilation.hooks.processAssets.tapPromise(
-			{
-				name: pluginName,
-				stage: compiler.webpack.Compilation.PROCESS_ASSETS_STAGE_SUMMARIZE,
-			},
-			async (assets) => {
-				try {
-					const sourcemaps = collectFromWebpackAssets(assets);
-					if (sourcemaps.length === 0) {
-						return;
-					}
-
-					const outputPath = compiler.options.output?.path;
-					if (!outputPath) {
-						return;
-					}
-					await uploadAndMaybeDelete(options, buildId, sourcemaps, outputPath);
-
-					if (options.deleteAfterUpload && compilation.deleteAsset) {
-						for (const item of sourcemaps) {
-							compilation.deleteAsset(item.fileName);
-						}
-					}
-				} catch (error) {
-					await handleUploadError(options, error);
-				}
-			},
-		);
-	});
-};
-
 const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 	(options, meta) => {
 		const framework = meta.framework as BundlerName | undefined;
@@ -440,12 +256,9 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 			};
 		}
 
-		const buildId =
-			options.buildId ??
-			getGitCommitHashSync() ??
-			`random_${crypto.randomUUID()}`;
-		const globalKey = options.globalKey ?? "__SOURCEMAPS_BUILD__";
-		const injection = createGlobalInjection(globalKey, buildId);
+		const buildId = resolveBuildId(options.buildId);
+		const globalKey = resolveGlobalKey(options.globalKey);
+		const injection = createBuildMetadataInjection(globalKey, buildId);
 
 		return {
 			name: pluginName,
@@ -500,18 +313,26 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 								result.metafile?.outputs ?? {},
 							).filter((name) => name.endsWith(".map"));
 							const sourcemaps = await Promise.all(
-								outputEntries.map(async (fileName) => {
-									const content = await readFile(fileName, "utf8");
-									return { fileName, content } satisfies UploadFile;
-								}),
+								outputEntries.map(
+									async (fileName) =>
+										({
+											fileName,
+											content: await readFile(fileName, "utf8"),
+										}) satisfies UploadFile,
+								),
 							);
 
-							const outdir =
+							const outputDir =
 								build.initialOptions.outdir ??
 								(build.initialOptions.outfile
 									? dirname(build.initialOptions.outfile)
 									: process.cwd());
-							await uploadAndMaybeDelete(options, buildId, sourcemaps, outdir);
+							await uploadAndMaybeDelete(
+								options,
+								buildId,
+								sourcemaps,
+								outputDir,
+							);
 						} catch (error) {
 							await handleUploadError(options, error);
 						}
@@ -530,7 +351,10 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 						return;
 					}
 
-					const sourcemaps = await collectFromOutputDirectory(outputDir);
+					const sourcemaps = await collectFromOutputDirectory(
+						outputDir,
+						options,
+					);
 					if (sourcemaps.length === 0) {
 						return;
 					}
@@ -543,6 +367,8 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 		};
 	},
 );
+
+export { uploadSourcemapsFromDirectory } from "@faststats/sourcemap-uploader-core";
 
 export const sourcemapsPlugin = unpluginInstance;
 export const vite = sourcemapsPlugin.vite;
