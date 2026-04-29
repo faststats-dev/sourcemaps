@@ -18,6 +18,21 @@ if (!process.env.REPOSITORY_TOKEN) {
 const pluginDir = join(scriptDir, "..", "packages", "proguard-plugin");
 const gradlew = join(pluginDir, "gradlew");
 
+const pkg = JSON.parse(
+	readFileSync(join(pluginDir, "package.json"), "utf8"),
+) as { version: string };
+
+const branch = pkg.version.includes("-pre") ? "snapshots" : "releases";
+const artifactUrl = `https://repo.thenextlvl.net/${branch}/dev/faststats/proguard-mappings-upload/${pkg.version}/proguard-mappings-upload-${pkg.version}.jar`;
+
+const head = await fetch(artifactUrl, { method: "HEAD" });
+if (head.ok) {
+	console.log(
+		`Skipping Gradle plugin publish: ${pkg.version} already published at ${artifactUrl}`,
+	);
+	process.exit(0);
+}
+
 const result = spawnSync(
 	gradlew,
 	["publishPluginMavenPublicationToMavenRepository"],
@@ -32,10 +47,6 @@ const result = spawnSync(
 if (result.status !== 0) {
 	process.exit(result.status ?? 1);
 }
-
-const pkg = JSON.parse(
-	readFileSync(join(pluginDir, "package.json"), "utf8"),
-) as { version: string };
 
 const tag = `${GRADLE_PLUGIN_ID}@${pkg.version}`;
 const title = `${GRADLE_PLUGIN_ID} ${pkg.version}`;
