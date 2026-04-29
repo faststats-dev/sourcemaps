@@ -64,7 +64,7 @@
 		"test": "vitest run"
 	},
 	"devDependencies": {
-		"@rspack/core": "^1.7.7",
+		"@rspack/core": "^2.0.0",
 		"@types/node": "^25.0.0",
 		"@types/webpack": "^5.28.5",
 		"esbuild": "^0.28.0",
