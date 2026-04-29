@@ -10,57 +10,71 @@
 		"url": "https://github.com/faststats-dev/sourcemaps"
 	},
 	"type": "module",
+	"main": "./dist/index.mjs",
+	"module": "./dist/index.mjs",
 	"files": [
 		"dist",
+		"src",
 		"README.md"
 	],
-	"types": "./dist/index.d.mts",
+	"types": "./src/index.ts",
 	"exports": {
 		".": {
-			"types": "./dist/index.d.mts",
-			"import": "./dist/index.mjs"
+			"types": "./src/index.ts",
+			"import": "./dist/index.mjs",
+			"default": "./dist/index.mjs"
 		},
 		"./vite": {
-			"types": "./dist/bundler/vite.d.mts",
-			"import": "./dist/bundler/vite.mjs"
+			"types": "./src/bundler/vite.ts",
+			"import": "./dist/bundler/vite.mjs",
+			"default": "./dist/bundler/vite.mjs"
 		},
 		"./rollup": {
-			"types": "./dist/bundler/rollup.d.mts",
-			"import": "./dist/bundler/rollup.mjs"
+			"types": "./src/bundler/rollup.ts",
+			"import": "./dist/bundler/rollup.mjs",
+			"default": "./dist/bundler/rollup.mjs"
 		},
 		"./rolldown": {
-			"types": "./dist/bundler/rolldown.d.mts",
-			"import": "./dist/bundler/rolldown.mjs"
+			"types": "./src/bundler/rolldown.ts",
+			"import": "./dist/bundler/rolldown.mjs",
+			"default": "./dist/bundler/rolldown.mjs"
 		},
 		"./webpack": {
-			"types": "./dist/bundler/webpack.d.mts",
-			"import": "./dist/bundler/webpack.mjs"
+			"types": "./src/bundler/webpack.ts",
+			"import": "./dist/bundler/webpack.mjs",
+			"default": "./dist/bundler/webpack.mjs"
 		},
 		"./rspack": {
-			"types": "./dist/bundler/rspack.d.mts",
-			"import": "./dist/bundler/rspack.mjs"
+			"types": "./src/bundler/rspack.ts",
+			"import": "./dist/bundler/rspack.mjs",
+			"default": "./dist/bundler/rspack.mjs"
 		},
 		"./esbuild": {
-			"types": "./dist/bundler/esbuild.d.mts",
-			"import": "./dist/bundler/esbuild.mjs"
+			"types": "./src/bundler/esbuild.ts",
+			"import": "./dist/bundler/esbuild.mjs",
+			"default": "./dist/bundler/esbuild.mjs"
 		},
 		"./unloader": {
-			"types": "./dist/bundler/unloader.d.mts",
-			"import": "./dist/bundler/unloader.mjs"
+			"types": "./src/bundler/unloader.ts",
+			"import": "./dist/bundler/unloader.mjs",
+			"default": "./dist/bundler/unloader.mjs"
 		},
 		"./farm": {
-			"types": "./dist/bundler/farm.d.mts",
-			"import": "./dist/bundler/farm.mjs"
+			"types": "./src/bundler/farm.ts",
+			"import": "./dist/bundler/farm.mjs",
+			"default": "./dist/bundler/farm.mjs"
 		},
 		"./bun": {
-			"types": "./dist/bundler/bun.d.mts",
-			"import": "./dist/bundler/bun.mjs"
+			"types": "./src/bundler/bun.ts",
+			"import": "./dist/bundler/bun.mjs",
+			"default": "./dist/bundler/bun.mjs"
 		}
 	},
 	"scripts": {
 		"build": "tsdown",
 		"lint": "biome check .",
 		"check-types": "tsc --noEmit",
+		"pretest": "bun run --cwd ../javascript-core build",
 		"test": "vitest run"
 	},
 	"devDependencies": {
@@ -78,6 +92,7 @@
 		"typescript": "^5.9.3 || ^6.0.0"
 	},
 	"dependencies": {
+		"@faststats/sourcemap-uploader-core": "workspace:*",
 		"unplugin": "^3.0.0"
 	}
 }

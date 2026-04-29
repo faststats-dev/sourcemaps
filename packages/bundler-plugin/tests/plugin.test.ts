@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getGitCommitHashSync } from "@faststats/sourcemap-uploader-core";
 import { rspack } from "@rspack/core";
 import { build as esbuildBuild } from "esbuild";
 import type { NormalizedOutputOptions, OutputBundle } from "rollup";
@@ -20,7 +21,6 @@ import unloaderPlugin from "../src/bundler/unloader";
 import vitePlugin from "../src/bundler/vite";
 import webpackPlugin from "../src/bundler/webpack";
 import sourcemapsPlugin from "../src/index";
-import { getGitCommitHashSync } from "../src/utils/git";
 
 type UploadPayload = {
 	type: "javascript";
