@@ -16,9 +16,9 @@
 		"ci:publish": "changeset publish && bun scripts/publish-proguard-plugin.ts"
 	},
 	"devDependencies": {
-		"@types/node": "^25.0.0",
-		"@biomejs/biome": "2.4.11",
-		"turbo": "^2.9.3",
+		"@types/node": "^25.6.0",
+		"@biomejs/biome": "2.4.13",
+		"turbo": "^2.9.6",
 		"typescript": "6.0.3",
 		"@changesets/changelog-github": "0.6.0",
 		"@changesets/cli": "2.31.0"
