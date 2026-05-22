@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use uuid::Uuid;
 
@@ -11,19 +12,14 @@ use super::s3_key;
 
 const PROGUARD_DIR: &str = "proguard";
 
-/// A parsed proguard mapping file.
 struct ProguardMapping {
-    /// Maps obfuscated class name -> ClassMapping
     classes: HashMap<String, ClassMapping>,
 }
 
 struct ClassMapping {
     original_name: String,
-    /// Source file name from comment metadata
     file_name: Option<String>,
-    /// Maps obfuscated method name -> Vec of method entries (overloaded methods can have multiple)
     methods: Vec<MethodMapping>,
-    /// Maps obfuscated field name -> original field name
     fields: HashMap<String, String>,
 }
 
@@ -41,40 +37,29 @@ impl ProguardMapping {
 
         for line in input.lines() {
             let line = line.trim_end();
-
-            // Skip empty lines
             if line.is_empty() {
                 continue;
             }
 
-            // Handle comments - check for source file metadata
             if line.starts_with('#') {
-                if let Some((_, ref mut class)) = current_class {
-                    // Try to extract fileName from JSON comment
-                    if let Some(json_start) = line.find('{')
-                        && let Ok(meta) =
-                            serde_json::from_str::<serde_json::Value>(&line[json_start..])
-                        && let Some(file_name) = meta.get("fileName").and_then(|v| v.as_str())
-                    {
-                        class.file_name = Some(file_name.to_string());
-                    }
+                if let Some((_, class)) = current_class.as_mut()
+                    && let Some(file_name) = extract_file_name(line)
+                {
+                    class.file_name = Some(file_name);
                 }
                 continue;
             }
 
-            // Class mapping: no leading whitespace, ends with ':'
             if !line.starts_with(' ') && !line.starts_with('\t') {
-                // Save previous class
                 if let Some((obfuscated, class)) = current_class.take() {
                     classes.insert(obfuscated, class);
                 }
 
-                // Parse: "original.Class -> obfuscated.Class:"
                 if let Some((original, obfuscated)) = parse_class_line(line) {
                     current_class = Some((
-                        obfuscated,
+                        obfuscated.to_owned(),
                         ClassMapping {
-                            original_name: original,
+                            original_name: original.to_owned(),
                             file_name: None,
                             methods: Vec::new(),
                             fields: HashMap::new(),
@@ -84,19 +69,16 @@ impl ProguardMapping {
                 continue;
             }
 
-            // Member mapping (indented)
-            if let Some((_, ref mut class)) = current_class {
-                let trimmed = line.trim();
-                parse_member_line(trimmed, class);
+            if let Some((_, class)) = current_class.as_mut() {
+                parse_member_line(line.trim(), class);
             }
         }
 
-        // Save last class
         if let Some((obfuscated, class)) = current_class {
             classes.insert(obfuscated, class);
         }
 
-        Ok(ProguardMapping { classes })
+        Ok(Self { classes })
     }
 
     fn parse_many<'a>(inputs: impl IntoIterator<Item = &'a str>) -> Result<Self, AppError> {
@@ -105,10 +87,11 @@ impl ProguardMapping {
         for input in inputs {
             let mapping = Self::parse(input)?;
             for (obfuscated_name, class) in mapping.classes {
-                if let Some(existing) = classes.get_mut(&obfuscated_name) {
-                    existing.merge(class);
-                } else {
-                    classes.insert(obfuscated_name, class);
+                match classes.entry(obfuscated_name) {
+                    Entry::Occupied(mut occupied) => occupied.get_mut().merge(class),
+                    Entry::Vacant(vacant) => {
+                        vacant.insert(class);
+                    }
                 }
             }
         }
@@ -117,58 +100,66 @@ impl ProguardMapping {
     }
 
     fn retrace(&self, stacktrace: &str) -> String {
-        let mut output = String::with_capacity(stacktrace.len());
-        for (i, line) in stacktrace.lines().enumerate() {
-            if i > 0 {
-                output.push('\n');
+        let mut out = String::with_capacity(stacktrace.len());
+
+        let mut first = true;
+        for line in stacktrace.lines() {
+            if !first {
+                out.push('\n');
             }
-            output.push_str(&self.retrace_line(line));
+            first = false;
+            self.retrace_line_into(line, &mut out);
         }
-        // Preserve trailing newline if present
+
         if stacktrace.ends_with('\n') {
-            output.push('\n');
+            out.push('\n');
         }
-        output
+
+        out
     }
 
-    fn retrace_line(&self, line: &str) -> String {
-        // Match "at <class>.<method>(<source>)" with optional leading whitespace
+    fn retrace_line_into(&self, line: &str, out: &mut String) {
         let trimmed = line.trim_start();
-        let prefix = &line[..line.len() - trimmed.len()];
+        let prefix_len = line.len() - trimmed.len();
+        let prefix = &line[..prefix_len];
 
-        let Some(rest) = trimmed.strip_prefix("at ") else {
-            // Not a stack frame line — try to retrace exception class name
-            // e.g. "java.lang.NullPointerException: message" or "Caused by: a.b.c: msg"
-            return self.retrace_exception_line(line);
-        };
+        if let Some(rest) = trimmed.strip_prefix("at ") {
+            self.retrace_stack_frame(prefix, rest, out);
+        } else {
+            self.retrace_exception_line_into(line, out);
+        }
+    }
 
-        // Parse "package.Class.method(Source:line)" or "package.Class.method(Unknown Source)"
+    fn retrace_stack_frame(&self, prefix: &str, rest: &str, out: &mut String) {
         let Some(paren_start) = rest.find('(') else {
-            return line.to_string();
+            out.push_str(prefix);
+            out.push_str("at ");
+            out.push_str(rest);
+            return;
         };
+
         let qualified = &rest[..paren_start];
         let location = &rest[paren_start..];
         let (class_prefix, qualified) = split_container_prefix(qualified);
 
-        // Split into class + method on last '.'
         let Some(dot_pos) = qualified.rfind('.') else {
-            return line.to_string();
+            out.push_str(prefix);
+            out.push_str("at ");
+            out.push_str(rest);
+            return;
         };
+
         let obf_class = &qualified[..dot_pos];
         let obf_method = &qualified[dot_pos + 1..];
 
-        // Extract line number from location like "(SourceFile:92)" or "(Unknown Source)"
-        let line_num = location
-            .trim_start_matches('(')
-            .trim_end_matches(')')
-            .rsplit_once(':')
-            .and_then(|(_, num)| num.parse::<u32>().ok());
-
         let Some(class) = self.classes.get(obf_class) else {
-            return line.to_string();
+            out.push_str(prefix);
+            out.push_str("at ");
+            out.push_str(rest);
+            return;
         };
 
-        let original_class = &class.original_name;
+        let line_num = parse_stacktrace_line_number(location);
         let resolved_method = self.resolve_method(class, obf_method, line_num);
         let method_name = resolved_method
             .map(|m| m.original_name.as_str())
@@ -176,18 +167,33 @@ impl ProguardMapping {
 
         let source_file = class.file_name.as_deref().unwrap_or("Unknown Source");
 
-        let location_str = match line_num {
-            Some(n) => format!("({source_file}:{n})"),
-            None => format!("({source_file})"),
-        };
+        out.push_str(prefix);
+        out.push_str("at ");
+        out.push_str(class_prefix);
+        out.push_str(&class.original_name);
+        out.push('.');
+        out.push_str(method_name);
 
-        format!("{prefix}at {class_prefix}{original_class}.{method_name}{location_str}")
+        match line_num {
+            Some(n) => {
+                out.push('(');
+                out.push_str(source_file);
+                out.push(':');
+                out.push_str(&n.to_string());
+                out.push(')');
+            }
+            None => {
+                out.push('(');
+                out.push_str(source_file);
+                out.push(')');
+            }
+        }
     }
 
-    fn retrace_exception_line(&self, line: &str) -> String {
-        // Handle "Caused by: a.b.c: message" or "a.b.c: message" or "a.b.c"
+    fn retrace_exception_line_into(&self, line: &str, out: &mut String) {
         let trimmed = line.trim_start();
-        let prefix = &line[..line.len() - trimmed.len()];
+        let prefix_len = line.len() - trimmed.len();
+        let prefix = &line[..prefix_len];
 
         let (before_class, class_and_rest) = if let Some(rest) = trimmed.strip_prefix("Caused by: ")
         {
@@ -196,20 +202,25 @@ impl ProguardMapping {
             ("", trimmed)
         };
 
-        // Extract class name (everything before first ": " or end of string)
-        let (obf_class, suffix) = class_and_rest
+        let (class_part, suffix) = class_and_rest
             .split_once(": ")
-            .map(|(c, m)| (c, format!(": {m}")))
-            .unwrap_or((class_and_rest, String::new()));
-        let (class_prefix, obf_class) = split_container_prefix(obf_class);
+            .map(|(c, m)| (c, Some(m)))
+            .unwrap_or((class_and_rest, None));
+
+        let (class_prefix, obf_class) = split_container_prefix(class_part);
 
         if let Some(class) = self.classes.get(obf_class) {
-            format!(
-                "{prefix}{before_class}{class_prefix}{}{suffix}",
-                class.original_name
-            )
+            out.push_str(prefix);
+            out.push_str(before_class);
+            out.push_str(class_prefix);
+            out.push_str(&class.original_name);
+
+            if let Some(message) = suffix {
+                out.push_str(": ");
+                out.push_str(message);
+            }
         } else {
-            line.to_string()
+            out.push_str(line);
         }
     }
 
@@ -227,8 +238,8 @@ impl ProguardMapping {
                     m.obfuscated_name == obf_method
                         && matches!(
                             (m.start_line, m.end_line),
-                            (Some(start_line), Some(end_line))
-                                if line_num >= start_line && line_num <= end_line
+                            (Some(start), Some(end))
+                                if line_num >= start && line_num <= end
                         )
                 })
                 .or_else(|| {
@@ -275,11 +286,18 @@ impl ClassMapping {
     }
 }
 
-/// Parse "original.Class -> obfuscated.Class:" into (original, obfuscated)
-fn parse_class_line(line: &str) -> Option<(String, String)> {
+fn extract_file_name(line: &str) -> Option<String> {
+    let json_start = line.find('{')?;
+    let meta = serde_json::from_str::<serde_json::Value>(&line[json_start..]).ok()?;
+    meta.get("fileName")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_owned())
+}
+
+fn parse_class_line(line: &str) -> Option<(&str, &str)> {
     let line = line.strip_suffix(':')?;
     let (original, obfuscated) = line.split_once(" -> ")?;
-    Some((original.trim().to_string(), obfuscated.trim().to_string()))
+    Some((original.trim(), obfuscated.trim()))
 }
 
 fn split_container_prefix(qualified: &str) -> (&str, &str) {
@@ -290,41 +308,47 @@ fn split_container_prefix(qualified: &str) -> (&str, &str) {
     }
 }
 
-/// Parse member lines (methods and fields) and add to class mapping
+fn parse_stacktrace_line_number(location: &str) -> Option<u32> {
+    location
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .rsplit_once(':')
+        .and_then(|(_, num)| num.parse::<u32>().ok())
+}
+
 fn parse_member_line(line: &str, class: &mut ClassMapping) {
-    // Try to parse as method with line numbers: "startLine:endLine:returnType method(params) -> obfuscated"
-    // Or field: "type fieldName -> obfuscated"
     let Some((original_part, obfuscated)) = line.rsplit_once(" -> ") else {
         return;
     };
-    let obfuscated = obfuscated.trim().to_string();
 
-    // Check if it has line number prefixes (method mapping)
-    // Format: "29:33:void <init>(java.nio.file.Path,java.nio.charset.Charset,java.lang.Object)"
-    // or: "java.nio.file.Path file" (field)
+    let obfuscated = obfuscated.trim();
+
     if let Some(method) = parse_method_with_lines(original_part) {
         class.methods.push(MethodMapping {
             original_name: method.name,
-            obfuscated_name: obfuscated,
+            obfuscated_name: obfuscated.to_owned(),
             start_line: Some(method.start_line),
             end_line: Some(method.end_line),
         });
-    } else if original_part.contains('(') {
+        return;
+    }
+
+    if original_part.contains('(') {
         if let Some(method_name) = parse_method_name(original_part) {
             class.methods.push(MethodMapping {
                 original_name: method_name,
-                obfuscated_name: obfuscated,
+                obfuscated_name: obfuscated.to_owned(),
                 start_line: None,
                 end_line: None,
             });
         }
-    } else {
-        // Field mapping: "type fieldName -> obfuscated"
-        // We just need the field name (last token before ->)
-        let parts: Vec<&str> = original_part.trim().rsplitn(2, ' ').collect();
-        if let Some(field_name) = parts.first() {
-            class.fields.insert(obfuscated, field_name.to_string());
-        }
+        return;
+    }
+
+    if let Some(field_name) = original_part.split_whitespace().last() {
+        class
+            .fields
+            .insert(obfuscated.to_owned(), field_name.to_owned());
     }
 }
 
@@ -335,49 +359,31 @@ struct ParsedMethod {
 }
 
 fn parse_method_name(s: &str) -> Option<String> {
-    let s = s.trim();
     let paren_pos = s.find('(')?;
     let before_paren = &s[..paren_pos];
     let method_name = before_paren
         .rsplit_once(' ')
         .map(|(_, name)| name)
         .unwrap_or(before_paren);
-    Some(method_name.to_string())
+    Some(method_name.to_owned())
 }
 
 fn parse_method_with_lines(s: &str) -> Option<ParsedMethod> {
     let s = s.trim();
-    // Format: "startLine:endLine:returnType methodName(params)"
     let (start_str, rest) = s.split_once(':')?;
-    let start_line: u32 = start_str.parse().ok()?;
+    let start_line = start_str.parse().ok()?;
     let (end_str, rest) = rest.split_once(':')?;
-    let end_line: u32 = end_str.parse().ok()?;
+    let end_line = end_str.parse().ok()?;
 
-    // rest is "returnType methodName(params)" or "returnType methodName(params):startLine2:endLine2"
-    // Handle inlined methods with additional line info
-    let rest = if let Some(colon_pos) = rest.find(':') {
-        // Check if what follows the colon is digits (inline mapping)
-        let after = &rest[colon_pos + 1..];
-        if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            &rest[..colon_pos]
-        } else {
-            rest
-        }
-    } else {
-        rest
-    };
-
-    // Split "returnType methodName(params)" - find the method name
     let paren_pos = rest.find('(')?;
     let before_paren = &rest[..paren_pos];
-    // The method name is the last space-separated token
     let method_name = before_paren
         .rsplit_once(' ')
         .map(|(_, name)| name)
         .unwrap_or(before_paren);
 
     Some(ParsedMethod {
-        name: method_name.to_string(),
+        name: method_name.to_owned(),
         start_line,
         end_line,
     })
