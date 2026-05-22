@@ -3,11 +3,13 @@ use std::sync::Arc;
 
 use aws_sdk_s3::Client;
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
+use tokio::task::JoinSet;
 
 use crate::crypto::Crypto;
 use crate::error::AppError;
 
 const ZSTD_LEVEL: i32 = 3;
+const MAX_CONCURRENT_DELETE_REQUESTS: usize = 16;
 
 #[derive(Clone)]
 pub struct Storage {
@@ -67,6 +69,7 @@ impl Storage {
     pub async fn delete_prefix(&self, prefix: &str) -> Result<u64, AppError> {
         let mut deleted: u64 = 0;
         let mut continuation_token: Option<String> = None;
+        let mut set: JoinSet<Result<u64, AppError>> = JoinSet::new();
 
         loop {
             let mut req = self
@@ -88,21 +91,10 @@ impl Storage {
                 .collect();
 
             if !objects.is_empty() {
-                let count = objects.len() as u64;
-                let delete = Delete::builder()
-                    .set_objects(Some(objects))
-                    .build()
-                    .map_err(s3_error)?;
-
-                self.client
-                    .delete_objects()
-                    .bucket(&self.bucket)
-                    .delete(delete)
-                    .send()
-                    .await
-                    .map_err(s3_error)?;
-
-                deleted += count;
+                while set.len() >= MAX_CONCURRENT_DELETE_REQUESTS {
+                    deleted += join_next_delete(&mut set).await?;
+                }
+                self.spawn_delete_chunk(&mut set, objects);
             }
 
             if resp.is_truncated() != Some(true) {
@@ -111,11 +103,20 @@ impl Storage {
             continuation_token = resp.next_continuation_token().map(Into::into);
         }
 
+        while let Some(joined) = set.join_next().await {
+            deleted += unwrap_join(joined)?;
+        }
+
         Ok(deleted)
     }
 
     pub async fn delete_keys(&self, keys: &[String]) -> Result<u64, AppError> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+
         let mut deleted: u64 = 0;
+        let mut set: JoinSet<Result<u64, AppError>> = JoinSet::new();
 
         for chunk in keys.chunks(1000) {
             let objects: Vec<ObjectIdentifier> = chunk
@@ -127,24 +128,43 @@ impl Storage {
                 continue;
             }
 
+            while set.len() >= MAX_CONCURRENT_DELETE_REQUESTS {
+                deleted += join_next_delete(&mut set).await?;
+            }
+            self.spawn_delete_chunk(&mut set, objects);
+        }
+
+        while let Some(joined) = set.join_next().await {
+            deleted += unwrap_join(joined)?;
+        }
+
+        Ok(deleted)
+    }
+
+    fn spawn_delete_chunk(
+        &self,
+        set: &mut JoinSet<Result<u64, AppError>>,
+        objects: Vec<ObjectIdentifier>,
+    ) {
+        let client = self.client.clone();
+        let bucket = self.bucket.clone();
+        set.spawn(async move {
             let count = objects.len() as u64;
             let delete = Delete::builder()
                 .set_objects(Some(objects))
                 .build()
                 .map_err(s3_error)?;
 
-            self.client
+            client
                 .delete_objects()
-                .bucket(&self.bucket)
+                .bucket(bucket)
                 .delete(delete)
                 .send()
                 .await
                 .map_err(s3_error)?;
 
-            deleted += count;
-        }
-
-        Ok(deleted)
+            Ok(count)
+        });
     }
 
     pub async fn list_prefix_keys(&self, prefix: &str) -> Result<Vec<String>, AppError> {
@@ -216,6 +236,23 @@ impl Storage {
         }
 
         Ok(objects)
+    }
+}
+
+async fn join_next_delete(set: &mut JoinSet<Result<u64, AppError>>) -> Result<u64, AppError> {
+    match set.join_next().await {
+        Some(joined) => unwrap_join(joined),
+        None => Ok(0),
+    }
+}
+
+fn unwrap_join(
+    joined: Result<Result<u64, AppError>, tokio::task::JoinError>,
+) -> Result<u64, AppError> {
+    match joined {
+        Ok(Ok(count)) => Ok(count),
+        Ok(Err(e)) => Err(e),
+        Err(e) => Err(AppError::S3(format!("delete task panicked: {e}"))),
     }
 }
 
