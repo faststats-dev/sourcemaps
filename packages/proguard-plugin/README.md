@@ -5,6 +5,30 @@ API for stacktrace deobfuscation.
 
 ## Installation
 
+Add the Faststats releases repository to your project's settings:
+
+```kotlin
+pluginManagement {
+    repositories {
+        maven("https://repo.faststats.dev/releases")
+        gradlePluginPortal()
+    }
+}
+```
+
+Or in Groovy (`settings.gradle`):
+
+```groovy
+pluginManagement {
+    repositories {
+        maven {
+            url = uri('https://repo.faststats.dev/releases')
+        }
+        gradlePluginPortal()
+    }
+}
+```
+
 Add the plugin to your project's `build.gradle.kts`:
 
 ```kotlin
