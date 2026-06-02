@@ -47,7 +47,7 @@ publishing {
     }
     repositories.maven {
         val branch = if (version.toString().contains("-pre")) "snapshots" else "releases"
-        url = uri("https://repo.thenextlvl.net/$branch")
+        url = uri("https://repo.faststats.dev/$branch")
         credentials {
             username = System.getenv("REPOSITORY_USER")
             password = System.getenv("REPOSITORY_TOKEN")

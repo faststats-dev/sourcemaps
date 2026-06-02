@@ -23,19 +23,19 @@ const pkg = JSON.parse(
 ) as { version: string };
 
 const branch = pkg.version.includes("-pre") ? "snapshots" : "releases";
-const artifactUrl = `https://repo.thenextlvl.net/${branch}/dev/faststats/proguard-mappings-upload/${pkg.version}/proguard-mappings-upload-${pkg.version}.jar`;
+const markerPomUrl = `https://repo.faststats.dev/${branch}/dev/faststats/proguard-mappings-upload/dev.faststats.proguard-mappings-upload.gradle.plugin/${pkg.version}/dev.faststats.proguard-mappings-upload.gradle.plugin-${pkg.version}.pom`;
 
-const head = await fetch(artifactUrl, { method: "HEAD" });
+const head = await fetch(markerPomUrl, { method: "HEAD" });
 if (head.ok) {
 	console.log(
-		`Skipping Gradle plugin publish: ${pkg.version} already published at ${artifactUrl}`,
+		`Skipping Gradle plugin publish: ${pkg.version} already published at ${markerPomUrl}`,
 	);
 	process.exit(0);
 }
 
 const result = spawnSync(
 	gradlew,
-	["publishPluginMavenPublicationToMavenRepository"],
+	["publishAllPublicationsToMavenRepository"],
 	{
 		cwd: pluginDir,
 		stdio: "inherit",
