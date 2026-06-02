@@ -5,7 +5,7 @@ API for stacktrace deobfuscation.
 
 ## Installation
 
-Add the Faststats releases repository to your project's settings:
+Add the FastStats releases repository to your project's settings:
 
 ```kotlin
 pluginManagement {
