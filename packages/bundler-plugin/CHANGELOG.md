@@ -1,5 +1,11 @@
 # @faststats/sourcemap-uploader-plugin
 
+## 0.5.0
+
+### Minor Changes
+
+- [`1c5bb0e`](https://github.com/faststats-dev/sourcemaps/commit/1c5bb0edd2d6206f1d54233d93b0d63635ea52c7) Thanks [@LuggaPugga](https://github.com/LuggaPugga)! - Rewrite
+
 ## 0.4.0
 
 ### Minor Changes
