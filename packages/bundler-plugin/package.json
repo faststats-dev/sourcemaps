@@ -60,7 +60,7 @@
 	"scripts": {
 		"build": "tsdown",
 		"lint": "biome check .",
-		"check-types": "tsc --noEmit",
+		"typecheck": "tsc --noEmit",
 		"test": "vitest run"
 	},
 	"devDependencies": {

@@ -1,3 +1,1 @@
-const value = ["vite", "fixture"].join("-");
-document.getElementById("app").textContent = value;
-console.log(value);
+export const value = ["vite", "fixture"].join("-");

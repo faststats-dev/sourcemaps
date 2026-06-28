@@ -1,544 +1,261 @@
-import { readdir, readFile, rm } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { readdir, readFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import type {
 	NormalizedOutputOptions,
 	OutputAsset,
 	OutputBundle,
 	OutputOptions,
 } from "rollup";
+import type {
+	NativeBuildContext,
+	RspackCompiler,
+	UnpluginBuildContext,
+	WebpackCompiler,
+} from "unplugin";
 import { createUnplugin } from "unplugin";
+import type { BundlerName, BundlerPluginOptions, UploadFile } from "./types";
+import { handleUploadError, uploadAndMaybeDelete } from "./upload";
 import { getGitCommitHashSync } from "./utils/git";
 
-const DEFAULT_ENDPOINT = "https://sourcemaps.faststats.dev/v0/upload";
-const DEFAULT_MAX_UPLOAD_BODY_BYTES = 50 * 1024 * 1024;
+export type {
+	BundlerName,
+	BundlerPluginOptions,
+	UploadFile,
+	UploadPayload,
+} from "./types";
 
-type BundlerName =
-	| "vite"
-	| "rollup"
-	| "rolldown"
-	| "webpack"
-	| "rspack"
-	| "esbuild"
-	| "farm"
-	| "bun"
-	| "unloader";
+const PLUGIN_NAME = "sourcemaps-bundler-plugin";
+const DEFAULT_GLOBAL_KEY = "__SOURCEMAPS_BUILD__";
+const SKIP_NATIVE_UPLOAD = new Set<BundlerName>([
+	"rollup",
+	"vite",
+	"rolldown",
+	"unloader",
+	"webpack",
+	"rspack",
+]);
 
-type WebpackLikeCompilation = {
-	hooks: {
-		processAssets: {
-			tapPromise: (
-				options: { name: string; stage: number },
-				callback: (
-					assets: Record<string, { source: () => unknown }>,
-				) => Promise<void>,
-			) => void;
-		};
-	};
-	deleteAsset?: (fileName: string) => void;
-};
-
-type WebpackLikeCompiler = {
-	webpack: {
-		BannerPlugin: new (options: {
-			banner: string | ((data: { hash?: string }) => string);
-			raw?: boolean;
-			entryOnly?: boolean;
-		}) => { apply: (compiler: unknown) => void };
-		Compilation: {
-			PROCESS_ASSETS_STAGE_SUMMARIZE: number;
-		};
-	};
-	options: {
-		output?: {
-			path?: string;
-		};
-	};
-	hooks: {
-		thisCompilation: {
-			tap: (
-				name: string,
-				callback: (compilation: WebpackLikeCompilation) => void,
-			) => void;
-		};
-	};
-};
-
-type NativeBuildContextLike = {
-	getNativeBuildContext?: () => unknown;
-};
-
-export type UploadFile = {
-	fileName: string;
-	content: string;
-};
-
-export type UploadPayload = {
-	type: "javascript";
+type State = {
+	options: BundlerPluginOptions;
 	buildId: string;
-	uploadedAt: string;
-	files: UploadFile[];
+	injection: string;
 };
 
-export type BundlerPluginOptions = {
-	enabled?: boolean | ((framework: BundlerName | undefined) => boolean);
-	endpoint?: string;
-	authToken?: string;
-	buildId?: string;
-	maxUploadBodyBytes?: number;
-	failOnError?: boolean;
-	deleteAfterUpload?: boolean;
-	globalKey?: string;
-	fetchImpl?: typeof fetch;
-	onUploadSuccess?: (payload: UploadPayload) => void | Promise<void>;
-	onUploadError?: (error: unknown) => void | Promise<void>;
-};
+const dirFromOut = (outdir?: string, outfile?: string) =>
+	outdir ?? (outfile ? dirname(outfile) : undefined);
 
-const pluginName = "sourcemaps-bundler-plugin";
+const prepend = (head: string, tail?: string) =>
+	tail ? `${head}\n${tail}` : head;
 
-const resolveEnabled = (
-	enabled: BundlerPluginOptions["enabled"],
-	framework: BundlerName | undefined,
-): boolean =>
-	typeof enabled === "function" ? enabled(framework) : (enabled ?? true);
-
-const createGlobalInjection = (globalKey: string, buildId: string): string =>
-	`globalThis[${JSON.stringify(globalKey)}]={buildId:${JSON.stringify(buildId)}};`;
-
-const collectUploadCandidates = (
-	entries: Array<[string, unknown]>,
-): UploadFile[] =>
-	entries
-		.filter(([fileName]) => fileName.endsWith(".map"))
-		.flatMap(([fileName, source]) => {
-			if (typeof source === "string") {
-				return [{ fileName, content: source }];
-			}
-
-			if (
-				source &&
-				typeof source === "object" &&
-				"toString" in source &&
-				typeof source.toString === "function"
-			) {
-				return [{ fileName, content: source.toString() }];
-			}
-
-			return [];
-		});
-
-const createBanner = (
-	existingBanner: OutputOptions["banner"],
+const mergeBanner = (
+	existing: OutputOptions["banner"],
 	injection: string,
 ): OutputOptions["banner"] => {
-	if (typeof existingBanner === "function") {
-		return async (chunk) => {
-			const current = await existingBanner(chunk);
-			return `${injection}\n${current}`;
-		};
+	if (typeof existing === "function") {
+		return async (chunk) => prepend(injection, await existing(chunk));
 	}
-
-	if (typeof existingBanner === "string") {
-		return `${injection}\n${existingBanner}`;
+	if (typeof existing === "string") {
+		return prepend(injection, existing);
 	}
-
 	return injection;
 };
 
-const postSourcemaps = async (
-	options: BundlerPluginOptions,
-	payload: UploadPayload,
-): Promise<void> => {
-	const fetchImpl = options.fetchImpl ?? fetch;
-	const response = await fetchImpl(options.endpoint ?? DEFAULT_ENDPOINT, {
-		method: "POST",
-		headers: {
-			"content-type": "application/json",
-			...(options.authToken
-				? { authorization: `Bearer ${options.authToken}` }
-				: {}),
-		},
-		body: JSON.stringify(payload),
-	});
-
-	if (!response.ok) {
-		throw new Error(`Sourcemap upload failed with status ${response.status}`);
+const assetSource = (source: unknown): string | undefined => {
+	if (typeof source === "string") {
+		return source;
 	}
-};
-
-const payloadSizeBytes = (payload: UploadPayload): number =>
-	Buffer.byteLength(JSON.stringify(payload), "utf8");
-
-const createUploadBatches = (
-	buildId: string,
-	files: UploadFile[],
-	maxUploadBodyBytes: number,
-): UploadPayload[] => {
-	if (!Number.isFinite(maxUploadBodyBytes) || maxUploadBodyBytes <= 0) {
-		throw new Error("maxUploadBodyBytes must be a positive number");
+	if (
+		source &&
+		typeof source === "object" &&
+		"toString" in source &&
+		typeof source.toString === "function"
+	) {
+		return source.toString();
 	}
-
-	const uploadedAt = new Date().toISOString();
-	const batches: UploadPayload[] = [];
-	let currentBatch: UploadFile[] = [];
-
-	const toPayload = (batch: UploadFile[]): UploadPayload => ({
-		type: "javascript",
-		buildId,
-		uploadedAt,
-		files: batch,
-	});
-
-	const assertWithinLimit = (batch: UploadFile[], fileName: string) => {
-		if (payloadSizeBytes(toPayload(batch)) > maxUploadBodyBytes) {
-			throw new Error(
-				`Sourcemap "${fileName}" exceeds maxUploadBodyBytes limit`,
-			);
-		}
-	};
-
-	for (const file of files) {
-		const nextBatch = [...currentBatch, file];
-
-		if (payloadSizeBytes(toPayload(nextBatch)) <= maxUploadBodyBytes) {
-			currentBatch = nextBatch;
-			continue;
-		}
-
-		if (currentBatch.length === 0) {
-			assertWithinLimit([file], file.fileName);
-		}
-
-		batches.push(toPayload(currentBatch));
-		currentBatch = [file];
-		assertWithinLimit(currentBatch, file.fileName);
-	}
-
-	if (currentBatch.length > 0) {
-		batches.push(toPayload(currentBatch));
-	}
-
-	return batches;
-};
-
-const handleUploadError = async (
-	options: BundlerPluginOptions,
-	error: unknown,
-): Promise<void> => {
-	await options.onUploadError?.(error);
-	if (options.failOnError ?? true) {
-		throw error;
-	}
-};
-
-const deleteFiles = async (
-	baseDir: string,
-	fileNames: string[],
-): Promise<void> => {
-	await Promise.all(
-		fileNames.map((fileName) =>
-			rm(isAbsolute(fileName) ? fileName : join(baseDir, fileName), {
-				force: true,
-			}),
-		),
-	);
-};
-
-const scanDirectoryRecursively = async (rootDir: string): Promise<string[]> => {
-	const entries = await readdir(rootDir, { withFileTypes: true });
-	const nested = await Promise.all(
-		entries.map(async (entry) => {
-			const fullPath = join(rootDir, entry.name);
-			if (entry.isDirectory()) {
-				return scanDirectoryRecursively(fullPath);
-			}
-			return [fullPath];
-		}),
-	);
-
-	return nested.flat();
-};
-
-const collectFromOutputDirectory = async (
-	outputDir: string,
-): Promise<UploadFile[]> => {
-	const files = await scanDirectoryRecursively(outputDir);
-	const sourcemapFiles = files.filter((filePath) => filePath.endsWith(".map"));
-	return Promise.all(
-		sourcemapFiles.map(async (filePath) => {
-			const content = await readFile(filePath, "utf8");
-			return {
-				fileName: relative(outputDir, filePath),
-				content,
-			} satisfies UploadFile;
-		}),
-	);
-};
-
-const getRecord = (value: unknown): Record<string, unknown> | undefined =>
-	value && typeof value === "object"
-		? (value as Record<string, unknown>)
-		: undefined;
-
-const getString = (value: unknown, key: string): string | undefined => {
-	const record = getRecord(value);
-	const field = record?.[key];
-	return typeof field === "string" ? field : undefined;
-};
-
-const resolveNativeOutputDir = (nativeContext: unknown): string | undefined => {
-	const native = getRecord(nativeContext);
-	const framework = native?.framework;
-
-	if (framework === "bun") {
-		const buildConfig = getRecord(getRecord(native?.build)?.config);
-		const outdir = getString(buildConfig, "outdir");
-		if (outdir) {
-			return outdir;
-		}
-
-		const outfile = getString(buildConfig, "outfile");
-		return outfile ? dirname(outfile) : undefined;
-	}
-
-	if (framework === "farm") {
-		const farmContext = getRecord(native?.context);
-		const farmConfig = getRecord(farmContext?.config);
-		const farmOutput = getRecord(farmConfig?.output);
-		return getString(farmOutput, "path");
-	}
-
 	return undefined;
 };
 
-const uploadAndMaybeDelete = async (
-	options: BundlerPluginOptions,
-	buildId: string,
-	files: UploadFile[],
-	baseDirForDeletion?: string,
-): Promise<void> => {
-	if (files.length === 0) {
-		return;
-	}
-
-	const batches = createUploadBatches(
-		buildId,
-		files,
-		options.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
-	);
-	for (const payload of batches) {
-		await postSourcemaps(options, payload);
-		await options.onUploadSuccess?.(payload);
-	}
-
-	if (options.deleteAfterUpload && baseDirForDeletion) {
-		await deleteFiles(
-			baseDirForDeletion,
-			files.map((item) => item.fileName),
-		);
-	}
-};
-
-const isOutputAsset = (entry: OutputBundle[string]): entry is OutputAsset =>
-	entry.type === "asset";
-
-const collectFromBundle = (bundle: OutputBundle): UploadFile[] =>
-	collectUploadCandidates(
-		Object.entries(bundle).map(([fileName, entry]) => [
-			fileName,
-			isOutputAsset(entry) ? entry.source : null,
-		]),
-	);
-
-const rollupWriteBundle = (options: BundlerPluginOptions, buildId: string) =>
-	async function (
-		this: unknown,
-		outputOptions: NormalizedOutputOptions,
-		bundle: OutputBundle,
-	): Promise<void> {
-		try {
-			const sourcemaps = collectFromBundle(bundle);
-			if (sourcemaps.length === 0) return;
-
-			const outputDir =
-				outputOptions.dir ??
-				(outputOptions.file ? dirname(outputOptions.file) : process.cwd());
-			await uploadAndMaybeDelete(options, buildId, sourcemaps, outputDir);
-		} catch (error) {
-			await handleUploadError(options, error);
+const mapsFromBundle = (bundle: OutputBundle): UploadFile[] =>
+	Object.entries(bundle).flatMap(([fileName, entry]) => {
+		if (!fileName.endsWith(".map") || entry.type !== "asset") {
+			return [];
 		}
-	};
+		const content = assetSource((entry as OutputAsset).source);
+		return content ? [{ fileName, content }] : [];
+	});
 
-const rollupOutputOptions = (injection: string) =>
-	function (this: unknown, outputOptions: OutputOptions): OutputOptions {
-		return {
-			...outputOptions,
-			banner: createBanner(outputOptions.banner, injection),
-		};
-	};
+const walk = async (rootDir: string): Promise<string[]> => {
+	const entries = await readdir(rootDir, { withFileTypes: true });
+	return (
+		await Promise.all(
+			entries.map((entry) => {
+				const path = join(rootDir, entry.name);
+				return entry.isDirectory() ? walk(path) : [path];
+			}),
+		)
+	).flat();
+};
 
-const collectFromWebpackAssets = (
-	assets: Record<string, { source: () => unknown }>,
-): UploadFile[] =>
-	collectUploadCandidates(
-		Object.entries(assets)
-			.filter(([assetName]) => assetName.endsWith(".map"))
-			.map(([assetName, source]) => [assetName, source.source()]),
+const mapsFromDir = async (outputDir: string): Promise<UploadFile[]> =>
+	Promise.all(
+		(await walk(outputDir))
+			.filter((path) => path.endsWith(".map"))
+			.map(async (path) => ({
+				fileName: relative(outputDir, path),
+				content: await readFile(path, "utf8"),
+			})),
 	);
 
-const applyWebpackLikeHooks = (
-	compiler: WebpackLikeCompiler,
-	options: BundlerPluginOptions,
-	globalKey: string,
-	buildId: string,
-): void => {
-	const BannerPlugin = compiler.webpack.BannerPlugin;
-	new BannerPlugin({
-		banner: createGlobalInjection(globalKey, buildId),
-		raw: true,
-		entryOnly: false,
-	}).apply(compiler);
-
-	compiler.hooks.thisCompilation.tap(pluginName, (compilation) => {
-		compilation.hooks.processAssets.tapPromise(
-			{
-				name: pluginName,
-				stage: compiler.webpack.Compilation.PROCESS_ASSETS_STAGE_SUMMARIZE,
-			},
-			async (assets) => {
-				try {
-					const sourcemaps = collectFromWebpackAssets(assets);
-					if (sourcemaps.length === 0) {
-						return;
-					}
-
-					const outputPath = compiler.options.output?.path;
-					if (!outputPath) {
-						return;
-					}
-					await uploadAndMaybeDelete(options, buildId, sourcemaps, outputPath);
-
-					if (options.deleteAfterUpload && compilation.deleteAsset) {
-						for (const item of sourcemaps) {
-							compilation.deleteAsset(item.fileName);
-						}
-					}
-				} catch (error) {
-					await handleUploadError(options, error);
-				}
-			},
-		);
-	});
+const nativeOutputDir = (native: NativeBuildContext): string | undefined => {
+	switch (native.framework) {
+		case "esbuild":
+			return dirFromOut(
+				native.build.initialOptions.outdir,
+				native.build.initialOptions.outfile,
+			);
+		case "bun":
+			return dirFromOut(
+				native.build.config.outdir,
+				native.build.config.outfile,
+			);
+		case "farm":
+			return native.context.config.output.path;
+	}
 };
+
+const guard = async (
+	options: BundlerPluginOptions,
+	run: () => Promise<void>,
+): Promise<void> => {
+	try {
+		await run();
+	} catch (error) {
+		await handleUploadError(options, error);
+	}
+};
+
+const uploadDir = async (state: State, outputDir: string) =>
+	uploadAndMaybeDelete(
+		state.options,
+		state.buildId,
+		await mapsFromDir(outputDir),
+		outputDir,
+	);
+
+const afterEmitUpload = (
+	compiler: {
+		hooks: {
+			afterEmit: {
+				tapPromise: (name: string, callback: () => Promise<void>) => void;
+			};
+		};
+		options: { output?: { path?: string } };
+	},
+	state: State,
+): void => {
+	compiler.hooks.afterEmit.tapPromise(PLUGIN_NAME, () =>
+		guard(state.options, async () => {
+			const outputDir = compiler.options.output?.path;
+			if (outputDir) {
+				await uploadDir(state, outputDir);
+			}
+		}),
+	);
+};
+
+const bannerOptions = (injection: string) => ({
+	banner: injection,
+	raw: true,
+	entryOnly: false,
+});
+
+const rollupHooks = (state: State) => ({
+	outputOptions: (options: OutputOptions): OutputOptions => ({
+		...options,
+		banner: mergeBanner(options.banner, state.injection),
+	}),
+	writeBundle: async (options: NormalizedOutputOptions, bundle: OutputBundle) =>
+		guard(state.options, async () => {
+			const files = mapsFromBundle(bundle);
+			if (files.length === 0) {
+				return;
+			}
+			const outputDir =
+				options.dir ?? (options.file ? dirname(options.file) : process.cwd());
+			await uploadAndMaybeDelete(
+				state.options,
+				state.buildId,
+				files,
+				outputDir,
+			);
+		}),
+});
 
 const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 	(options, meta) => {
 		const framework = meta.framework as BundlerName | undefined;
-		if (!resolveEnabled(options.enabled, framework)) {
-			return {
-				name: pluginName,
-				enforce: "post",
-			};
+		const enabled =
+			typeof options.enabled === "function"
+				? options.enabled(framework)
+				: (options.enabled ?? true);
+		if (!enabled) {
+			return { name: PLUGIN_NAME, enforce: "post" };
 		}
 
 		const buildId =
 			options.buildId ??
 			getGitCommitHashSync() ??
 			`random_${crypto.randomUUID()}`;
-		const globalKey = options.globalKey ?? "__SOURCEMAPS_BUILD__";
-		const injection = createGlobalInjection(globalKey, buildId);
+		const state: State = {
+			options,
+			buildId,
+			injection: `globalThis[${JSON.stringify(options.globalKey ?? DEFAULT_GLOBAL_KEY)}]={buildId:${JSON.stringify(buildId)}};`,
+		};
+		const hooks = rollupHooks(state);
 
 		return {
-			name: pluginName,
+			name: PLUGIN_NAME,
 			enforce: "post",
-			rollup: {
-				outputOptions: rollupOutputOptions(injection),
-				writeBundle: rollupWriteBundle(options, buildId),
-			},
-			vite: {
-				outputOptions: rollupOutputOptions(injection),
-				writeBundle: rollupWriteBundle(options, buildId),
-			},
-			rolldown: {
-				outputOptions: rollupOutputOptions(injection) as never,
-				writeBundle: rollupWriteBundle(options, buildId) as never,
-			},
-			unloader: {
-				outputOptions: rollupOutputOptions(injection),
-				writeBundle: rollupWriteBundle(options, buildId),
-			},
-			webpack(compiler) {
-				applyWebpackLikeHooks(
-					compiler as unknown as WebpackLikeCompiler,
-					options,
-					globalKey,
-					buildId,
+			rollup: hooks,
+			vite: hooks,
+			rolldown: hooks as never,
+			unloader: hooks,
+			webpack(compiler: WebpackCompiler) {
+				new compiler.webpack.BannerPlugin(bannerOptions(state.injection)).apply(
+					compiler,
 				);
+				afterEmitUpload(compiler, state);
 			},
-			rspack(compiler) {
-				applyWebpackLikeHooks(
-					compiler as unknown as WebpackLikeCompiler,
-					options,
-					globalKey,
-					buildId,
+			rspack(compiler: RspackCompiler) {
+				new compiler.webpack.BannerPlugin(bannerOptions(state.injection)).apply(
+					compiler,
 				);
+				afterEmitUpload(compiler, state);
 			},
 			esbuild: {
-				setup(build) {
-					const previousBanner = build.initialOptions.banner?.js;
-					build.initialOptions.banner = {
-						...(build.initialOptions.banner ?? {}),
-						js: previousBanner ? `${injection}\n${previousBanner}` : injection,
+				config(buildOptions) {
+					buildOptions.banner = {
+						...(buildOptions.banner ?? {}),
+						js: prepend(
+							state.injection,
+							typeof buildOptions.banner?.js === "string"
+								? buildOptions.banner.js
+								: undefined,
+						),
 					};
-
-					if (!build.initialOptions.metafile) {
-						build.initialOptions.metafile = true;
-					}
-
-					build.onEnd(async (result) => {
-						try {
-							const outputEntries = Object.keys(
-								result.metafile?.outputs ?? {},
-							).filter((name) => name.endsWith(".map"));
-							const sourcemaps = await Promise.all(
-								outputEntries.map(async (fileName) => {
-									const content = await readFile(fileName, "utf8");
-									return { fileName, content } satisfies UploadFile;
-								}),
-							);
-
-							const outdir =
-								build.initialOptions.outdir ??
-								(build.initialOptions.outfile
-									? dirname(build.initialOptions.outfile)
-									: process.cwd());
-							await uploadAndMaybeDelete(options, buildId, sourcemaps, outdir);
-						} catch (error) {
-							await handleUploadError(options, error);
-						}
-					});
 				},
 			},
-			buildEnd: async function (this: NativeBuildContextLike): Promise<void> {
-				if (meta.framework !== "farm" && meta.framework !== "bun") {
+			buildEnd: async function (this: UnpluginBuildContext) {
+				if (framework && SKIP_NATIVE_UPLOAD.has(framework)) {
 					return;
 				}
-
-				try {
-					const nativeContext = this.getNativeBuildContext?.();
-					const outputDir = resolveNativeOutputDir(nativeContext);
-					if (!outputDir) {
-						return;
+				await guard(state.options, async () => {
+					const native = this.getNativeBuildContext?.();
+					const outputDir = native && nativeOutputDir(native);
+					if (outputDir) {
+						await uploadDir(state, outputDir);
 					}
-
-					const sourcemaps = await collectFromOutputDirectory(outputDir);
-					if (sourcemaps.length === 0) {
-						return;
-					}
-
-					await uploadAndMaybeDelete(options, buildId, sourcemaps, outputDir);
-				} catch (error) {
-					await handleUploadError(options, error);
-				}
+				});
 			},
 		};
 	},

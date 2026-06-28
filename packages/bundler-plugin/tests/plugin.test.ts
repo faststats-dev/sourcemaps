@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { rspack } from "@rspack/core";
+import { type MultiStats, rspack, type Stats } from "@rspack/core";
 import { build as esbuildBuild } from "esbuild";
 import type { NormalizedOutputOptions, OutputBundle } from "rollup";
 import { rollup as createRollupBundle } from "rollup";
@@ -57,8 +57,46 @@ const findFirst = async (
 	return files.find((filePath) => filePath.endsWith(suffix));
 };
 
-const firstPlugin = <T>(plugin: T | T[]): T =>
-	Array.isArray(plugin) ? plugin[0]! : plugin;
+const firstPlugin = <T>(plugin: T | T[]): T => {
+	if (Array.isArray(plugin)) {
+		const entry = plugin[0];
+		if (entry === undefined) {
+			throw new Error("Expected plugin array to be non-empty");
+		}
+		return entry;
+	}
+	return plugin;
+};
+
+const expectBuildIdInBundle = (content: string, buildId: string) => {
+	expect(content).toMatch(new RegExp(`buildId:\\s*${JSON.stringify(buildId)}`));
+};
+
+const expectBuildIdNotInBundle = (content: string, buildId: string) => {
+	expect(content).not.toMatch(
+		new RegExp(`buildId:\\s*${JSON.stringify(buildId)}`),
+	);
+};
+
+const runViteFixtureBuild = async (
+	cwd: string,
+	plugins: NonNullable<Parameters<typeof viteBuild>[0]["plugins"]>,
+) =>
+	viteBuild({
+		configFile: false,
+		root: cwd,
+		build: {
+			lib: {
+				entry: join(cwd, "src/main.js"),
+				formats: ["es"],
+				fileName: "main",
+			},
+			outDir: "dist",
+			sourcemap: true,
+			emptyOutDir: true,
+		},
+		plugins,
+	});
 
 const runWebpack = (config: webpack.Configuration): Promise<webpack.Stats> =>
 	new Promise((resolvePromise, rejectPromise) => {
@@ -82,7 +120,9 @@ const runWebpack = (config: webpack.Configuration): Promise<webpack.Stats> =>
 		});
 	});
 
-const runRspack = (config: Parameters<typeof rspack>[0]): Promise<any> =>
+const runRspack = (
+	config: Parameters<typeof rspack>[0],
+): Promise<Stats | MultiStats> =>
 	new Promise((resolvePromise, rejectPromise) => {
 		rspack(config, (error, stats) => {
 			if (error) {
@@ -213,31 +253,24 @@ describe("sourcemaps bundler plugin", () => {
 		const buildId = "vite-build-id";
 		const outDir = join(cwd, "dist");
 
-		await viteBuild({
-			configFile: false,
-			root: cwd,
-			build: {
-				outDir,
-				sourcemap: true,
-				emptyOutDir: true,
-			},
-			plugins: [
-				vitePlugin({
-					endpoint,
-					buildId,
-					deleteAfterUpload: true,
-				}),
-			],
-		});
+		await runViteFixtureBuild(cwd, [
+			vitePlugin({
+				endpoint,
+				buildId,
+				deleteAfterUpload: true,
+			}),
+		]);
 
 		expect(uploads).toHaveLength(1);
 		expect(uploads[0]?.type).toBe("javascript");
 		expect(uploads[0]?.buildId).toBe(buildId);
 		expect(uploads[0]?.files.length).toBeGreaterThan(0);
-		const jsBundle = await findFirst(outDir, ".js");
-		expect(jsBundle).toBeTruthy();
-		const content = await readFile(jsBundle!, "utf8");
-		expect(content.includes(`buildId:"${buildId}"`)).toBe(true);
+		const jsBundle = await findFirst(outDir, ".mjs");
+		if (!jsBundle) {
+			throw new Error("Expected js bundle");
+		}
+		const content = await readFile(jsBundle, "utf8");
+		expectBuildIdInBundle(content, buildId);
 		const mapBundle = await findFirst(outDir, ".map");
 		expect(mapBundle).toBeUndefined();
 		await rm(cwd, { recursive: true, force: true });
@@ -248,32 +281,23 @@ describe("sourcemaps bundler plugin", () => {
 		await cp(join(fixturesDir, "vite"), cwd, { recursive: true });
 		const outDir = join(cwd, "dist");
 
-		await viteBuild({
-			configFile: false,
-			root: cwd,
-			build: {
-				outDir,
-				sourcemap: true,
-				emptyOutDir: true,
-			},
-			plugins: [
-				vitePlugin({
-					endpoint,
-					buildId: "disabled-build-id",
-					deleteAfterUpload: true,
-					enabled: false,
-				}),
-			],
-		});
+		await runViteFixtureBuild(cwd, [
+			vitePlugin({
+				endpoint,
+				buildId: "disabled-build-id",
+				deleteAfterUpload: true,
+				enabled: false,
+			}),
+		]);
 
 		expect(uploads).toHaveLength(0);
-		const jsBundle = await findFirst(outDir, ".js");
+		const jsBundle = await findFirst(outDir, ".mjs");
 		expect(jsBundle).toBeTruthy();
 		if (!jsBundle) {
 			throw new Error("Expected Vite output bundle to exist");
 		}
 		const content = await readFile(jsBundle, "utf8");
-		expect(content.includes('buildId:"disabled-build-id"')).toBe(false);
+		expectBuildIdNotInBundle(content, "disabled-build-id");
 		const mapBundle = await findFirst(outDir, ".map");
 		expect(mapBundle).toBeTruthy();
 		await rm(cwd, { recursive: true, force: true });
@@ -465,7 +489,7 @@ describe("sourcemaps bundler plugin", () => {
 		expect(uploads).toHaveLength(1);
 		expect(uploads[0]?.buildId).toBe(expectedBuildId);
 		const content = await readFile(join(outDir, "bundle.js"), "utf8");
-		expect(content.includes(`buildId:"${expectedBuildId}"`)).toBe(true);
+		expectBuildIdInBundle(content, expectedBuildId);
 		await rm(cwd, { recursive: true, force: true });
 	});
 
@@ -498,9 +522,11 @@ describe("sourcemaps bundler plugin", () => {
 		expect(uploads[0]?.buildId).toBe(buildId);
 		expect(uploads[0]?.files.length).toBeGreaterThan(0);
 		const jsBundle = await findFirst(outDir, ".js");
-		expect(jsBundle).toBeTruthy();
-		const content = await readFile(jsBundle!, "utf8");
-		expect(content.includes(`buildId:"${buildId}"`)).toBe(true);
+		if (!jsBundle) {
+			throw new Error("Expected js bundle");
+		}
+		const content = await readFile(jsBundle, "utf8");
+		expectBuildIdInBundle(content, buildId);
 		const mapBundle = await findFirst(outDir, ".map");
 		expect(mapBundle).toBeUndefined();
 		await rm(cwd, { recursive: true, force: true });
@@ -534,7 +560,7 @@ describe("sourcemaps bundler plugin", () => {
 		expect(uploads).toHaveLength(1);
 		expect(uploads[0]?.buildId).toBe(expectedBuildId);
 		const content = await readFile(join(outDir, "bundle.js"), "utf8");
-		expect(content.includes(`buildId:"${expectedBuildId}"`)).toBe(true);
+		expectBuildIdInBundle(content, expectedBuildId);
 		await rm(cwd, { recursive: true, force: true });
 	});
 
@@ -569,7 +595,7 @@ describe("sourcemaps bundler plugin", () => {
 		expect(uploads[0]?.files.length).toBeGreaterThan(0);
 		const jsBundle = join(outDir, "bundle.js");
 		const content = await readFile(jsBundle, "utf8");
-		expect(content.includes(`buildId:"${buildId}"`)).toBe(true);
+		expectBuildIdInBundle(content, buildId);
 		const mapBundle = await findFirst(outDir, ".map");
 		expect(mapBundle).toBeUndefined();
 		await rm(cwd, { recursive: true, force: true });
@@ -608,7 +634,7 @@ describe("sourcemaps bundler plugin", () => {
 		expect(uploads[0]?.files.length).toBeGreaterThan(0);
 		const jsBundle = join(outDir, "bundle.js");
 		const content = await readFile(jsBundle, "utf8");
-		expect(content.includes(`buildId:"${buildId}"`)).toBe(true);
+		expectBuildIdInBundle(content, buildId);
 		const mapBundle = await findFirst(outDir, ".map");
 		expect(mapBundle).toBeUndefined();
 		await rm(cwd, { recursive: true, force: true });
@@ -641,7 +667,7 @@ describe("sourcemaps bundler plugin", () => {
 		expect(uploads[0]?.files.length).toBeGreaterThan(0);
 		const jsBundle = join(outDir, "bundle.js");
 		const content = await readFile(jsBundle, "utf8");
-		expect(content.includes(`buildId:"${buildId}"`)).toBe(true);
+		expectBuildIdInBundle(content, buildId);
 		const mapBundle = await findFirst(outDir, ".map");
 		expect(mapBundle).toBeUndefined();
 		await rm(cwd, { recursive: true, force: true });
