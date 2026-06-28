@@ -7,7 +7,7 @@ import { type MultiStats, rspack, type Stats } from "@rspack/core";
 import { build as esbuildBuild } from "esbuild";
 import type { NormalizedOutputOptions, OutputBundle } from "rollup";
 import { rollup as createRollupBundle } from "rollup";
-import { build as viteBuild } from "vite";
+import { build as viteBuild, type InlineConfig } from "vite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import webpack from "webpack";
 import bunPlugin from "../src/bundler/bun";
@@ -80,7 +80,7 @@ const expectBuildIdNotInBundle = (content: string, buildId: string) => {
 
 const runViteFixtureBuild = async (
 	cwd: string,
-	plugins: NonNullable<Parameters<typeof viteBuild>[0]["plugins"]>,
+	plugins: NonNullable<InlineConfig["plugins"]>,
 ) =>
 	viteBuild({
 		configFile: false,
