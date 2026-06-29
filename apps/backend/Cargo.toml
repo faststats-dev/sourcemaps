@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-aes-gcm = "0.10.3"
+aes-gcm = "0.11.0"
 aws-sdk-s3 = "1.82.0"
 axum = "0.8.4"
 base64 = "0.22.1"
