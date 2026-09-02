@@ -23,7 +23,7 @@ const pkg = JSON.parse(
 ) as { version: string };
 
 const branch = pkg.version.includes("-pre") ? "snapshots" : "releases";
-const markerPomUrl = `https://repo.faststats.dev/${branch}/dev/faststats/proguard-mappings-upload/${pkg.version}/proguard-mappings-upload-${pkg.version}.pom`;
+const markerPomUrl = `https://repo.faststats.dev/${branch}/dev/faststats/proguard-mappings-upload/dev.faststats.proguard-mappings-upload.gradle.plugin/${pkg.version}/dev.faststats.proguard-mappings-upload.gradle.plugin-${pkg.version}.pom`;
 
 const head = await fetch(markerPomUrl, { method: "HEAD" });
 if (head.ok) {
@@ -33,16 +33,12 @@ if (head.ok) {
 	process.exit(0);
 }
 
-const result = spawnSync(
-	gradlew,
-	["publishPluginMavenPublicationToMavenRepository"],
-	{
-		cwd: pluginDir,
-		stdio: "inherit",
-		env: process.env,
-		shell: false,
-	},
-);
+const result = spawnSync(gradlew, ["publishAllPublicationsToMavenRepository"], {
+	cwd: pluginDir,
+	stdio: "inherit",
+	env: process.env,
+	shell: false,
+});
 
 if (result.status !== 0) {
 	process.exit(result.status ?? 1);

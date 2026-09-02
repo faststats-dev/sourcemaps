@@ -38,8 +38,6 @@ gradlePlugin {
 
 publishing {
     publications.withType<MavenPublication>().configureEach {
-        groupId = project.group.toString()
-        artifactId = "proguard-mappings-upload"
         pom.scm {
             val repository = "FastStats-dev/sourcemaps"
             url.set("https://github.com/$repository/tree/main/packages/proguard-plugin")
