@@ -1,5 +1,11 @@
 # @faststats/proguard-mappings-upload-plugin
 
+## 0.1.4
+
+### Patch Changes
+
+- [`70f2d07`](https://github.com/faststats-dev/sourcemaps/commit/70f2d072a1199ef9b3239f6505b92d3ebde1ce23) Thanks [@NonSwag](https://github.com/NonSwag)! - revert "fixes"
+
 ## 0.1.3
 
 ### Patch Changes
