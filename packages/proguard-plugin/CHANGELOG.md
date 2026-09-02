@@ -1,5 +1,11 @@
 # @faststats/proguard-mappings-upload-plugin
 
+## 0.1.3
+
+### Patch Changes
+
+- [`a407610`](https://github.com/faststats-dev/sourcemaps/commit/a4076106006415fa3b8fa6f53188408d93932acf) Thanks [@NonSwag](https://github.com/NonSwag)! - fix gradle plugin publication for real this time
+
 ## 0.1.2
 
 ### Patch Changes

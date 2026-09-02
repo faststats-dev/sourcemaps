@@ -1,6 +1,6 @@
 {
 	"name": "@faststats/proguard-mappings-upload-plugin",
-	"version": "0.1.2",
+	"version": "0.1.3",
 	"private": true,
 	"scripts": {
 		"build": "./gradlew build"
