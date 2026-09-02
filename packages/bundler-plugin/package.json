@@ -75,7 +75,7 @@
 		"webpack": "5.106.1"
 	},
 	"peerDependencies": {
-		"typescript": "^5.9.3 || ^6.0.0"
+		"typescript": "^5.9.3 || ^6.0.0 || ^7.0.0"
 	},
 	"dependencies": {
 		"unplugin": "^3.0.0"
