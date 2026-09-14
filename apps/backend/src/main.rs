@@ -6,7 +6,7 @@ mod mappings;
 mod routes;
 mod storage;
 
-use std::sync::Arc;
+use std::{future::IntoFuture, sync::Arc};
 
 use sqlx::postgres::PgPoolOptions;
 use tracing::info;
@@ -18,8 +18,8 @@ use storage::Storage;
 pub struct AppState {
     pub db: sqlx::PgPool,
     pub storage: Storage,
-    pub apikey_crypto: Arc<Crypto>,
-    pub admin_token: Arc<str>,
+    pub apikey_crypto: Crypto,
+    pub admin_token: String,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -54,8 +54,8 @@ async fn main() {
     );
 
     let (public_result, internal_result) = tokio::join!(
-        serve_listener(public_listener, public_app),
-        serve_listener(internal_listener, internal_app)
+        axum::serve(public_listener, public_app).into_future(),
+        axum::serve(internal_listener, internal_app).into_future()
     );
     public_result.unwrap();
     internal_result.unwrap();
@@ -67,10 +67,9 @@ async fn build_state(config: &Config) -> AppState {
     }
 
     let file_crypto =
-        Arc::new(Crypto::new(&config.file_encryption_key).expect("invalid FILE_ENCRYPTION_KEY"));
-    let apikey_crypto = Arc::new(
-        Crypto::new(&config.apikey_encryption_key).expect("invalid APIKEY_ENCRYPTION_KEY"),
-    );
+        Crypto::new(&config.file_encryption_key).expect("invalid FILE_ENCRYPTION_KEY");
+    let apikey_crypto =
+        Crypto::new(&config.apikey_encryption_key).expect("invalid APIKEY_ENCRYPTION_KEY");
     let db = PgPoolOptions::new()
         .max_connections(config.database_max_connections)
         .connect(&config.database_url)
@@ -78,13 +77,13 @@ async fn build_state(config: &Config) -> AppState {
         .expect("failed to connect to database");
     info!("connected to postgres");
     let s3_client = s3_client(config);
-    let storage = Storage::new(s3_client, config.s3_bucket.clone(), file_crypto.clone());
+    let storage = Storage::new(s3_client, config.s3_bucket.clone(), file_crypto);
 
     AppState {
         db,
         storage,
         apikey_crypto,
-        admin_token: Arc::<str>::from(config.admin_token.clone()),
+        admin_token: config.admin_token.clone(),
     }
 }
 
@@ -106,11 +105,4 @@ fn s3_client(config: &Config) -> aws_sdk_s3::Client {
             .force_path_style(true)
             .build(),
     )
-}
-
-async fn serve_listener(
-    listener: tokio::net::TcpListener,
-    app: axum::Router<()>,
-) -> std::io::Result<()> {
-    axum::serve(listener, app).await
 }

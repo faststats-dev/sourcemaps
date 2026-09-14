@@ -27,12 +27,12 @@ impl Crypto {
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let mut nonce_bytes = [0u8; NONCE_LEN];
         rand::rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         // aes-gcm returns ciphertext || tag
         let ct_with_tag = self
             .cipher
-            .encrypt(nonce, plaintext)
+            .encrypt(&nonce, plaintext)
             .map_err(CryptoError::Aes)?;
 
         // Re-arrange to Node.js format: iv || tag || ciphertext
@@ -60,9 +60,9 @@ impl Crypto {
         payload.extend_from_slice(ct);
         payload.extend_from_slice(tag);
 
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::try_from(nonce_bytes).expect("nonce length checked above");
         self.cipher
-            .decrypt(nonce, payload.as_slice())
+            .decrypt(&nonce, payload.as_slice())
             .map_err(CryptoError::Aes)
     }
 }
@@ -75,4 +75,38 @@ pub enum CryptoError {
     TooShort,
     #[error("AES-GCM error: {0}")]
     Aes(aes_gcm::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decrypts_node_js_wire_format() {
+        // Node.js createCipheriv("aes-256-gcm") with zero key and IV.
+        let data = hex::decode("00000000000000000000000052b1f2d03a2d4e2f8a2cf59d43080be180c82458630a184e6421a8a3db87f47a1b0c6abe4e864c1da9d680fc10").unwrap();
+        let crypto = Crypto::new(&"00".repeat(32)).unwrap();
+        assert_eq!(
+            crypto.decrypt(&data).unwrap(),
+            b"Node.js compatibility fixture"
+        );
+        let mut tampered = data;
+        tampered[NONCE_LEN] ^= 1;
+        assert!(matches!(
+            crypto.decrypt(&tampered),
+            Err(CryptoError::Aes(_))
+        ));
+    }
+
+    #[test]
+    fn encrypts_round_trip_with_unique_nonces() {
+        let crypto = Crypto::new(&"00".repeat(32)).unwrap();
+        for plaintext in [b"".as_slice(), b"sourcemap contents"] {
+            let first = crypto.encrypt(plaintext).unwrap();
+            let second = crypto.encrypt(plaintext).unwrap();
+            assert_ne!(&first[..NONCE_LEN], &second[..NONCE_LEN]);
+            assert_eq!(first.len(), plaintext.len() + NONCE_LEN + TAG_LEN);
+            assert_eq!(crypto.decrypt(&first).unwrap(), plaintext);
+        }
+    }
 }

@@ -26,7 +26,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -37,7 +37,7 @@ jobs:
           bun-version: latest
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: "temurin"
           java-version: "17"
@@ -50,13 +50,13 @@ jobs:
 
       - name: Create Release Pull Request or Publish
         id: changesets
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
-          version: bun run ci:version
-          publish: bun run ci:publish
-          commit: "chore: version packages"
-          title: "chore: version packages"
+          version-script: bun run ci:version
+          publish-script: bun run ci:publish
+          commit-message: "chore: version packages"
+          pr-title: "chore: version packages"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY_TOKEN: ${{ secrets.REPOSITORY_TOKEN }}
           REPOSITORY_USER: ${{ secrets.REPOSITORY_USER }}

@@ -4,7 +4,6 @@ use std::collections::hash_map::Entry;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::storage::Storage;
 
 #[cfg(test)]
 use super::OriginalPosition;
@@ -387,20 +386,6 @@ fn parse_method_with_lines(s: &str) -> Option<ParsedMethod> {
         start_line,
         end_line,
     })
-}
-
-pub async fn ingest(
-    storage: &Storage,
-    project_id: Uuid,
-    build_id: &str,
-    mappings: &[(String, String)],
-) -> Result<(), AppError> {
-    for (file_name, mapping) in mappings {
-        let key = proguard_s3_key(project_id, build_id, file_name);
-        storage.put(&key, mapping.as_bytes()).await?;
-    }
-
-    Ok(())
 }
 
 pub fn retrace_stacktrace<'a>(

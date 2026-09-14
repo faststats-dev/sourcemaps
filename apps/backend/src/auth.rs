@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::extract::FromRequestParts;
 use axum::http::HeaderMap;
 use axum::http::request::Parts;
@@ -69,7 +67,7 @@ impl FromRequestParts<SharedState> for AdminAuthenticatedProject {
     ) -> Result<Self, Self::Rejection> {
         let admin_token = header_value(&parts.headers, HEADER_ADMIN_TOKEN)?;
 
-        if admin_token != state.admin_token.as_ref() {
+        if admin_token != state.admin_token {
             return Err(AppError::Unauthorized);
         }
 
@@ -95,17 +93,10 @@ fn bearer_token(headers: &HeaderMap) -> Result<&str, AppError> {
 
 fn extract_prefix(token: &str) -> Option<&str> {
     // Keys are `fsm_<hex>`, prefix is first 12 chars (e.g. `fsm_abcd1234`)
-    if token.len() < 12 {
-        return None;
-    }
-    Some(&token[..12])
+    token.get(..12)
 }
 
-fn verify_api_key(
-    crypto: &Arc<Crypto>,
-    encrypted_b64: &str,
-    provided: &str,
-) -> Result<bool, AppError> {
+fn verify_api_key(crypto: &Crypto, encrypted_b64: &str, provided: &str) -> Result<bool, AppError> {
     let encrypted = BASE64
         .decode(encrypted_b64)
         .map_err(|_| AppError::Internal("invalid base64 in encrypted_key".into()))?;
@@ -113,4 +104,16 @@ fn verify_api_key(
     let stored = std::str::from_utf8(&decrypted)
         .map_err(|_| AppError::Internal("invalid utf-8 in decrypted key".into()))?;
     Ok(stored == provided)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_prefix;
+
+    #[test]
+    fn prefix_rejects_short_tokens_and_non_character_boundaries() {
+        assert_eq!(extract_prefix("short"), None);
+        assert_eq!(extract_prefix("fsm_abcd1234rest"), Some("fsm_abcd1234"));
+        assert_eq!(extract_prefix("fsm_aaaaaaaé"), None);
+    }
 }

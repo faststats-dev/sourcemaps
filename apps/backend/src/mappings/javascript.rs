@@ -1,29 +1,8 @@
-use uuid::Uuid;
-
 use crate::error::AppError;
-use crate::storage::Storage;
 
-use super::{OriginalPosition, s3_key};
+use super::OriginalPosition;
 
-pub async fn ingest(
-    storage: &Storage,
-    project_id: Uuid,
-    build_id: &str,
-    sourcemaps: &[(String, String)], // (file_name, sourcemap_content)
-) -> Result<(), AppError> {
-    for (file_name, content) in sourcemaps {
-        let key = s3_key(project_id, build_id, file_name);
-        storage.put(&key, content.as_bytes()).await?;
-    }
-    Ok(())
-}
-
-pub fn apply(
-    data: &[u8],
-    _file_name: &str,
-    line: u32,
-    column: u32,
-) -> Result<OriginalPosition, AppError> {
+pub fn apply(data: &[u8], line: u32, column: u32) -> Result<OriginalPosition, AppError> {
     let source_map = sourcemap::SourceMap::from_slice(data)
         .map_err(|e| AppError::BadRequest(format!("invalid sourcemap: {e}")))?;
     let token = source_map

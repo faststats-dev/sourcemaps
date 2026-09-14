@@ -1,12 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import type {
-	NormalizedOutputOptions,
-	OutputAsset,
-	OutputBundle,
-	OutputOptions,
-} from "rollup";
-import type {
 	NativeBuildContext,
 	RspackCompiler,
 	UnpluginBuildContext,
@@ -47,12 +41,12 @@ const dirFromOut = (outdir?: string, outfile?: string) =>
 const prepend = (head: string, tail?: string) =>
 	tail ? `${head}\n${tail}` : head;
 
-const mergeBanner = (
-	existing: OutputOptions["banner"],
+const mergeBanner = <Chunk>(
+	existing: string | ((chunk: Chunk) => string | Promise<string>) | undefined,
 	injection: string,
-): OutputOptions["banner"] => {
+) => {
 	if (typeof existing === "function") {
-		return async (chunk) => prepend(injection, await existing(chunk));
+		return async (chunk: Chunk) => prepend(injection, await existing(chunk));
 	}
 	if (typeof existing === "string") {
 		return prepend(injection, existing);
@@ -75,12 +69,14 @@ const assetSource = (source: unknown): string | undefined => {
 	return undefined;
 };
 
-const mapsFromBundle = (bundle: OutputBundle): UploadFile[] =>
+type MappingBundle = Record<string, { type: string; source?: unknown }>;
+
+const mapsFromBundle = (bundle: MappingBundle): UploadFile[] =>
 	Object.entries(bundle).flatMap(([fileName, entry]) => {
 		if (!fileName.endsWith(".map") || entry.type !== "asset") {
 			return [];
 		}
-		const content = assetSource((entry as OutputAsset).source);
+		const content = assetSource(entry.source);
 		return content ? [{ fileName, content }] : [];
 	});
 
@@ -170,11 +166,21 @@ const bannerOptions = (injection: string) => ({
 });
 
 const rollupHooks = (state: State) => ({
-	outputOptions: (options: OutputOptions): OutputOptions => ({
+	outputOptions: <
+		Chunk,
+		Options extends {
+			banner?: string | ((chunk: Chunk) => string | Promise<string>);
+		},
+	>(
+		options: Options,
+	) => ({
 		...options,
 		banner: mergeBanner(options.banner, state.injection),
 	}),
-	writeBundle: async (options: NormalizedOutputOptions, bundle: OutputBundle) =>
+	writeBundle: async (
+		options: { dir?: string; file?: string },
+		bundle: MappingBundle,
+	) =>
 		guard(state.options, async () => {
 			const files = mapsFromBundle(bundle);
 			if (files.length === 0) {
@@ -218,7 +224,7 @@ const unpluginInstance = createUnplugin<BundlerPluginOptions>(
 			enforce: "post",
 			rollup: hooks,
 			vite: hooks,
-			rolldown: hooks as never,
+			rolldown: hooks,
 			unloader: hooks,
 			webpack(compiler: WebpackCompiler) {
 				new compiler.webpack.BannerPlugin(bannerOptions(state.injection)).apply(
@@ -269,8 +275,8 @@ export const webpack = sourcemapsPlugin.webpack;
 export const rspack = sourcemapsPlugin.rspack;
 export const esbuild = sourcemapsPlugin.esbuild;
 export const unloader = sourcemapsPlugin.unloader;
-export const farm = sourcemapsPlugin.farm;
-export const bun = sourcemapsPlugin.bun;
+export const farm: typeof sourcemapsPlugin.farm = sourcemapsPlugin.farm;
+export const bun: typeof sourcemapsPlugin.bun = sourcemapsPlugin.bun;
 
 type DefaultSourcemapsPlugin = typeof vite & typeof sourcemapsPlugin;
 const defaultSourcemapsPlugin: DefaultSourcemapsPlugin = Object.assign(

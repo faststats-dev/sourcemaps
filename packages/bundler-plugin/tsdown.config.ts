@@ -14,6 +14,8 @@ export default defineConfig({
 		"bundler/bun": "src/bundler/bun.ts",
 	},
 	format: ["esm"],
+	// Keep consumer bundler types external, including CommonJS declarations.
+	deps: { neverBundle: true },
 	clean: true,
 	outDir: "dist",
 });

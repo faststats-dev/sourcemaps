@@ -168,60 +168,32 @@ pub async fn ingest(
 ) -> Result<(StatusCode, Json<IngestResponse>), AppError> {
     let project_id = auth.project_id;
 
-    let (build_id, uploaded_at, ingested, total_bytes, mapping_type) = match &payload {
+    let (build_id, uploaded_at, files, mapping_type) = match &payload {
         IngestPayload::JavaScript {
             build_id,
             uploaded_at,
             files,
-        } => {
-            let entries = normalize_upload_files(build_id, uploaded_at, files)?;
-            crate::mappings::javascript::ingest(&state.storage, project_id, build_id, &entries)
-                .await?;
-            let total_bytes: usize = entries.iter().map(|(_, content)| content.len()).sum();
-            let file_names: Vec<&str> = entries
-                .iter()
-                .map(|(file_name, _)| file_name.as_str())
-                .collect();
-            info!(
-                %project_id,
-                build_id,
-                files = ?file_names,
-            );
-            (
-                build_id.as_str(),
-                uploaded_at.as_str(),
-                entries.len(),
-                total_bytes,
-                "javascript",
-            )
-        }
+        } => (build_id, uploaded_at, files, "javascript"),
         IngestPayload::Proguard {
             build_id,
             uploaded_at,
             files,
-        } => {
-            let mappings = normalize_upload_files(build_id, uploaded_at, files)?;
-            crate::mappings::proguard::ingest(&state.storage, project_id, build_id, &mappings)
-                .await?;
-            let total_bytes: usize = mappings.iter().map(|(_, mapping)| mapping.len()).sum();
-            let file_names: Vec<&str> = mappings
-                .iter()
-                .map(|(file_name, _)| file_name.as_str())
-                .collect();
-            info!(
-                %project_id,
-                build_id,
-                files = ?file_names,
-            );
-            (
-                build_id.as_str(),
-                uploaded_at.as_str(),
-                mappings.len(),
-                total_bytes,
-                "proguard",
-            )
-        }
+        } => (build_id, uploaded_at, files, "proguard"),
     };
+    let entries = normalize_upload_files(build_id, uploaded_at, files)?;
+    for (file_name, content) in &entries {
+        let key = match &payload {
+            IngestPayload::JavaScript { .. } => s3_key(project_id, build_id, file_name),
+            IngestPayload::Proguard { .. } => {
+                crate::mappings::proguard::proguard_s3_key(project_id, build_id, file_name)
+            }
+        };
+        state.storage.put(&key, content.as_bytes()).await?;
+    }
+    let ingested = entries.len();
+    let total_bytes: usize = entries.iter().map(|(_, content)| content.len()).sum();
+    let file_names: Vec<&str> = entries.iter().map(|(name, _)| *name).collect();
+    info!(%project_id, build_id, files = ?file_names);
 
     record_build_id(&state.db, project_id, build_id, uploaded_at).await?;
 
@@ -351,7 +323,7 @@ pub async fn apply_sourcemap(
             let map_file = crate::mappings::javascript::map_file_name(file_name);
             let key = s3_key(auth.project_id, build_id, &map_file);
             let data = state.storage.get(&key).await?;
-            let original = crate::mappings::javascript::apply(&data, file_name, *line, *column)?;
+            let original = crate::mappings::javascript::apply(&data, *line, *column)?;
             ApplyResponse::JavaScript { ok: true, original }
         }
         ApplyPayload::Proguard {
@@ -431,11 +403,11 @@ pub async fn cleanup_old_builds(
     }))
 }
 
-fn normalize_upload_files(
+fn normalize_upload_files<'a>(
     build_id: &str,
     uploaded_at: &str,
-    files: &[UploadFile],
-) -> Result<Vec<(String, String)>, AppError> {
+    files: &'a [UploadFile],
+) -> Result<Vec<(&'a str, &'a str)>, AppError> {
     require_non_empty("build_id", build_id)?;
     require_non_empty("uploaded_at", uploaded_at)?;
     if files.is_empty() {
@@ -446,7 +418,7 @@ fn normalize_upload_files(
     for entry in files {
         require_non_empty("file_name", &entry.file_name)?;
         require_non_empty("content", &entry.content)?;
-        normalized.push((entry.file_name.clone(), entry.content.clone()));
+        normalized.push((entry.file_name.as_str(), entry.content.as_str()));
     }
     Ok(normalized)
 }
@@ -598,28 +570,22 @@ mod tests {
 
     #[test]
     fn normalize_upload_files_accepts_multiple_named_files() {
-        let normalized = normalize_upload_files(
-            "build-1",
-            "2026-03-22T00:00:00Z",
-            &[
-                UploadFile {
-                    file_name: "base.txt".to_string(),
-                    content: "one".to_string(),
-                },
-                UploadFile {
-                    file_name: "feature.txt".to_string(),
-                    content: "two".to_string(),
-                },
-            ],
-        )
-        .expect("entries should normalize");
+        let files = [
+            UploadFile {
+                file_name: "base.txt".to_string(),
+                content: "one".to_string(),
+            },
+            UploadFile {
+                file_name: "feature.txt".to_string(),
+                content: "two".to_string(),
+            },
+        ];
+        let normalized = normalize_upload_files("build-1", "2026-03-22T00:00:00Z", &files)
+            .expect("entries should normalize");
 
         assert_eq!(
             normalized,
-            vec![
-                ("base.txt".to_string(), "one".to_string()),
-                ("feature.txt".to_string(), "two".to_string()),
-            ]
+            vec![("base.txt", "one"), ("feature.txt", "two"),]
         );
     }
 

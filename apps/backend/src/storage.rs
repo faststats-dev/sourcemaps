@@ -1,6 +1,3 @@
-use std::io::{Read, Write};
-use std::sync::Arc;
-
 use aws_sdk_s3::Client;
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use tokio::task::JoinSet;
@@ -15,7 +12,7 @@ const MAX_CONCURRENT_DELETE_REQUESTS: usize = 16;
 pub struct Storage {
     client: Client,
     bucket: String,
-    crypto: Arc<Crypto>,
+    crypto: Crypto,
 }
 
 #[derive(Clone, Debug)]
@@ -26,7 +23,7 @@ pub struct StoredObjectMeta {
 }
 
 impl Storage {
-    pub fn new(client: Client, bucket: String, crypto: Arc<Crypto>) -> Self {
+    pub fn new(client: Client, bucket: String, crypto: Crypto) -> Self {
         Self {
             client,
             bucket,
@@ -68,21 +65,17 @@ impl Storage {
 
     pub async fn delete_prefix(&self, prefix: &str) -> Result<u64, AppError> {
         let mut deleted: u64 = 0;
-        let mut continuation_token: Option<String> = None;
         let mut set: JoinSet<Result<u64, AppError>> = JoinSet::new();
+        let mut pages = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(prefix)
+            .into_paginator()
+            .send();
 
-        loop {
-            let mut req = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .prefix(prefix);
-
-            if let Some(token) = &continuation_token {
-                req = req.continuation_token(token);
-            }
-
-            let resp = req.send().await.map_err(s3_error)?;
+        while let Some(resp) = pages.next().await {
+            let resp = resp.map_err(s3_error)?;
 
             let objects: Vec<ObjectIdentifier> = resp
                 .contents()
@@ -96,11 +89,6 @@ impl Storage {
                 }
                 self.spawn_delete_chunk(&mut set, objects);
             }
-
-            if resp.is_truncated() != Some(true) {
-                break;
-            }
-            continuation_token = resp.next_continuation_token().map(Into::into);
         }
 
         while let Some(joined) = set.join_next().await {
@@ -168,35 +156,12 @@ impl Storage {
     }
 
     pub async fn list_prefix_keys(&self, prefix: &str) -> Result<Vec<String>, AppError> {
-        let mut keys = Vec::new();
-        let mut continuation_token: Option<String> = None;
-
-        loop {
-            let mut req = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .prefix(prefix);
-
-            if let Some(token) = &continuation_token {
-                req = req.continuation_token(token);
-            }
-
-            let resp = req.send().await.map_err(s3_error)?;
-
-            for object in resp.contents() {
-                if let Some(key) = object.key() {
-                    keys.push(key.to_string());
-                }
-            }
-
-            if resp.is_truncated() != Some(true) {
-                break;
-            }
-            continuation_token = resp.next_continuation_token().map(Into::into);
-        }
-
-        Ok(keys)
+        Ok(self
+            .list_prefix_objects(prefix)
+            .await?
+            .into_iter()
+            .map(|object| object.key)
+            .collect())
     }
 
     pub async fn list_prefix_objects(
@@ -204,20 +169,16 @@ impl Storage {
         prefix: &str,
     ) -> Result<Vec<StoredObjectMeta>, AppError> {
         let mut objects = Vec::new();
-        let mut continuation_token: Option<String> = None;
+        let mut pages = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(prefix)
+            .into_paginator()
+            .send();
 
-        loop {
-            let mut req = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .prefix(prefix);
-
-            if let Some(token) = &continuation_token {
-                req = req.continuation_token(token);
-            }
-
-            let resp = req.send().await.map_err(s3_error)?;
+        while let Some(resp) = pages.next().await {
+            let resp = resp.map_err(s3_error)?;
 
             for object in resp.contents() {
                 if let Some(key) = object.key() {
@@ -228,11 +189,6 @@ impl Storage {
                     });
                 }
             }
-
-            if resp.is_truncated() != Some(true) {
-                break;
-            }
-            continuation_token = resp.next_continuation_token().map(Into::into);
         }
 
         Ok(objects)
@@ -257,23 +213,11 @@ fn unwrap_join(
 }
 
 fn zstd_compress(data: &[u8]) -> Result<Vec<u8>, AppError> {
-    let mut encoder = zstd::Encoder::new(Vec::new(), ZSTD_LEVEL)
-        .map_err(|e| AppError::Compression(e.to_string()))?;
-    encoder
-        .write_all(data)
-        .map_err(|e| AppError::Compression(e.to_string()))?;
-    encoder
-        .finish()
-        .map_err(|e| AppError::Compression(e.to_string()))
+    zstd::stream::encode_all(data, ZSTD_LEVEL).map_err(|e| AppError::Compression(e.to_string()))
 }
 
 fn zstd_decompress(data: &[u8]) -> Result<Vec<u8>, AppError> {
-    let mut decoder = zstd::Decoder::new(data).map_err(|e| AppError::Compression(e.to_string()))?;
-    let mut out = Vec::new();
-    decoder
-        .read_to_end(&mut out)
-        .map_err(|e| AppError::Compression(e.to_string()))?;
-    Ok(out)
+    zstd::stream::decode_all(data).map_err(|e| AppError::Compression(e.to_string()))
 }
 
 fn s3_error(error: impl ToString + std::fmt::Debug) -> AppError {

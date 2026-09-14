@@ -9,24 +9,24 @@
 		"dev": "turbo run dev",
 		"lint": "turbo run lint",
 		"test": "turbo run test",
-		"format": "prettier --write \"**/*.{ts,tsx,md}\"",
+		"format": "biome check --write",
 		"typecheck": "tsc --noEmit -p scripts/tsconfig.json && turbo run typecheck",
 		"ci": "turbo run lint check-types test build",
 		"ci:version": "changeset version && bun update && bun run sync-proguard-version",
 		"ci:publish": "changeset publish && bun scripts/publish-proguard-plugin.ts"
 	},
 	"devDependencies": {
-		"@types/node": "^25.9.5",
-		"@biomejs/biome": "2.5.2",
+		"@types/node": "^26.5.1",
+		"@biomejs/biome": "2.5.13",
 		"turbo": "^2.10.12",
-		"typescript": "6.0.3",
-		"@changesets/changelog-github": "0.7.0",
-		"@changesets/cli": "2.31.0"
+		"typescript": "7.0.2",
+		"@changesets/changelog-github": "1.0.1",
+		"@changesets/cli": "3.0.2"
 	},
 	"engines": {
-		"node": ">=21"
+		"node": "^22.12.0 || ^24.0.0 || >=26.0.0"
 	},
-	"packageManager": "bun@1.3.10",
+	"packageManager": "bun@1.4.2",
 	"workspaces": [
 		"apps/*",
 		"packages/*"
