@@ -17,7 +17,7 @@
 	},
 	"devDependencies": {
 		"@types/node": "^26.5.1",
-		"@biomejs/biome": "2.5.13",
+		"@biomejs/biome": "2.5.14",
 		"turbo": "^2.10.12",
 		"typescript": "7.0.2",
 		"@changesets/changelog-github": "1.0.1",
