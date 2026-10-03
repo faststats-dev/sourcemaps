@@ -1,4 +1,4 @@
-FROM rust:1.98.1-trixie AS chef
+FROM rust:1.99.0-trixie AS chef
 RUN rustup target add x86_64-unknown-linux-musl
 RUN cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /app
