@@ -1,5 +1,11 @@
 # @faststats/sourcemap-uploader-plugin
 
+## 0.5.1
+
+### Patch Changes
+
+- [`0ca3078`](https://github.com/faststats-dev/sourcemaps/commit/0ca30787790cf63bb02782973ebfddcdd541493c) Thanks [@LuggaPugga](https://github.com/LuggaPugga)! - Update dependencies, support TypeScript 7 and Vite 8, and preserve external bundler types in declarations.
+
 ## 0.5.0
 
 ### Minor Changes
