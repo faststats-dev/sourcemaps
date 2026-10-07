@@ -1,9 +1,14 @@
 # Sourcemaps
+The old monorepo for sourcemap upload infrastructure.
 
 > [!IMPORTANT]
-> This repository is in early development and not intended for production use.
+> The ProGuard upload moved to https://github.com/faststats-dev/proguard-upload-plugin
 
-A monorepo for sourcemap upload infrastructure.
+> [!IMPORTANT]
+> The JavaScript upload moved into https://github.com/faststats-dev/faststats-javascript
+
+> [!IMPORTANT]
+> The Rust service moved into https://github.com/faststats-dev/data-collector
 
 ## Structure
 
